@@ -29,6 +29,20 @@ class Cancelled(Exception):
     pass
 
 
+class TruncatedDownload(RuntimeError):
+    """A Content-Length body ended before every declared byte arrived.
+
+    The counts stay plain attributes with the message built once here, so
+    str() and repr() always render; jobs surfaces failures to users as
+    str(error) and must never crash on the error it is reporting.
+    """
+
+    def __init__(self, received, expected):
+        super().__init__("Download cut off after {} of {} bytes".format(received, expected))
+        self.received = received
+        self.expected = expected
+
+
 # Decky's loader is a PyInstaller bundle whose OpenSSL looks for CA certs at
 # the build distro's paths, so the default context can come up empty here.
 CA_BUNDLES = (
@@ -140,6 +154,10 @@ def download_to(fh, url, cancel, progress):
             fh.write(chunk)
             done += len(chunk)
             progress(done, total)
+        if total and done < total:
+            # read() ends silently at EOF, so a mirror dropping the connection
+            # mid-body would otherwise publish a truncated binary.
+            raise TruncatedDownload(done, total)
 
 
 def _clean_output(raw):
