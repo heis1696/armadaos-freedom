@@ -1,0 +1,70 @@
+name: Tests
+
+on:
+  pull_request:
+    branches: [main, staging]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: Linux shell and Python tests
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install shell test dependency
+        run: sudo apt-get update && sudo apt-get install -y jq
+      - name: Set up Just
+        uses: ublue-os/just-action@30ab4659369934b65b655bf8d2fa4ddd6547d384 # v3
+      - name: Run Linux tests
+        run: just test
+
+  waydroid-root:
+    name: Root device-node tests
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Run isolated root tests
+        run: sudo bash tests/run-tests.sh root
+
+  control:
+    name: Armada Control frontend
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: Install locked dependencies
+        working-directory: decky/armada-control
+        run: npm ci
+      - name: Run frontend tests
+        working-directory: decky/armada-control
+        run: npm test
+
+  worker:
+    name: Downloads Worker
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: Install locked dependencies
+        working-directory: workers/downloads
+        run: npm ci
+      - name: Run Worker tests
+        working-directory: workers/downloads
+        run: npm test
