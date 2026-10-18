@@ -1,22 +1,32 @@
 # Testing
 
-Run repository checks from the repository root. The `just test` recipe retains
-the legacy behavior of executing every `tests/*-test.sh` script. The separated
+Run repository checks from the repository root. `just test` runs the routine
+Linux shell and Python suites, including the TB323FU device tests. The separated
 entries below make environment requirements visible and are used by CI.
 
 ## Routine checks
 
-`just test-linux` (or `bash tests/run-tests.sh linux`) runs shell tests except
-the root-only Waydroid device-node test, then all `tests/*-test.py` files that
-do not need a special environment, plus `tests/test_g9_double_home.py`. Python
-tests are discovered from the directory, so a new ordinary `*-test.py` suite is
-included automatically. The paired `armada-store-download-test.sh` is included
-by the retained shell-test glob, and its Python suite by Python discovery.
+`just test` (or `bash tests/run-tests.sh linux`) runs every `tests/*-test.sh`
+suite except the root-only Waydroid device-node test, the TB323FU speaker-gain
+mock test, ordinary Python suites under `tests/` and
+`devices/lenovo-tb323fu/tests/`, and `tests/test_g9_double_home.py`. Python
+suites are discovered by glob. During the Linux run, a Python file with a
+same-named shell wrapper is run through that wrapper only, avoiding duplicate
+execution. `just test-python` runs the Python suites directly, including those
+with shell wrappers. New root-level `*-test.sh` and `*-test.py` suites are
+included automatically.
 
-`just test-python` runs the same ordinary Python group by itself. CI runs the
-Linux group in an Ubuntu 24.04 runner. It requires system Bash, Python 3, and
-`jq`; it does not require publishing credentials, device hardware, partitions,
-or flashing.
+The TB323FU speaker-gain test receives the absolute production script path and
+a new output directory below a temporary parent. It uses only its local mocks;
+it does not access real devices.
+
+`just test-device` runs the two TB323FU Python suites and the speaker-gain mock
+test by themselves.
+
+The Linux default prints the root, disk, GUI, and OSTree groups that it leaves
+out and names their independent Just entries. CI runs `just test` in an Ubuntu
+24.04 runner. It requires system Bash, Python 3, and `jq`; it does not require
+publishing credentials, device hardware, partitions, or flashing.
 
 ## Special environments
 
@@ -48,6 +58,7 @@ tested JavaScript suite.
 
 `.github/workflows/tests.yml` runs on pull requests to `main` or `staging` and
 on manual dispatch. It requests read-only repository contents and does not use
-release or publishing secrets. Linux, root fixture, Control, and Worker checks
-are separate jobs. Disk, GUI, and OSTree suites remain explicit local/container
-entries and are not represented as CI passes.
+release or publishing secrets. The Linux job invokes the default `just test`;
+the root fixture, Control, and Worker checks are separate jobs. Disk, GUI, and
+OSTree suites remain explicit local/container entries and are not represented
+as CI passes.

@@ -21,8 +21,10 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install shell test dependency
         run: sudo apt-get update && sudo apt-get install -y jq
+      - name: Set up Just
+        uses: ublue-os/just-action@30ab4659369934b65b655bf8d2fa4ddd6547d384 # v3
       - name: Run Linux tests
-        run: bash tests/run-tests.sh linux
+        run: just test
 
   waydroid-root:
     name: Root device-node tests

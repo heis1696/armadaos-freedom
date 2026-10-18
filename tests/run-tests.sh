@@ -6,7 +6,7 @@ cd "$ROOT"
 
 usage() {
     cat >&2 <<'EOF'
-Usage: bash tests/run-tests.sh {linux|python|root|disk|gui|ostree}
+Usage: bash tests/run-tests.sh {linux|python|device|root|disk|gui|ostree}
 EOF
     exit 2
 }
@@ -22,6 +22,7 @@ require_commands() {
 }
 
 run_python_tests() {
+    local skip_wrapped="${1:-false}"
     local test_file
     local count=0
     shopt -s nullglob
@@ -31,6 +32,15 @@ run_python_tests() {
                 continue
                 ;;
         esac
+        if [[ "$skip_wrapped" == true && -f "${test_file%.py}.sh" ]]; then
+            printf 'Skipping Python test already run by shell wrapper: %s\n' "$test_file"
+            continue
+        fi
+        printf 'Running Python test: %s\n' "$test_file"
+        python3 "$test_file"
+        count=$((count + 1))
+    done
+    for test_file in devices/lenovo-tb323fu/tests/test_*.py; do
         printf 'Running Python test: %s\n' "$test_file"
         python3 "$test_file"
         count=$((count + 1))
@@ -39,6 +49,25 @@ run_python_tests() {
     python3 tests/test_g9_double_home.py
     count=$((count + 1))
     printf 'Completed %d Python test files.\n' "$count"
+}
+
+run_device_speaker_test() {
+    local source="$ROOT/devices/lenovo-tb323fu/rootfs/usr/libexec/tb323fu/tb323fu-speaker-gain"
+    require_commands sh mktemp
+    DEVICE_TEST_TMP="$(mktemp -d)"
+    trap 'rm -rf "$DEVICE_TEST_TMP"' EXIT
+    printf 'Running shell test: devices/lenovo-tb323fu/tests/test-tb323fu-speaker-gain.sh\n'
+    sh devices/lenovo-tb323fu/tests/test-tb323fu-speaker-gain.sh \
+        "$source" "$DEVICE_TEST_TMP/output"
+}
+
+run_device_tests() {
+    require_commands python3
+    printf 'Running Python test: devices/lenovo-tb323fu/tests/test_y700_runtime_record.py\n'
+    python3 devices/lenovo-tb323fu/tests/test_y700_runtime_record.py
+    printf 'Running Python test: devices/lenovo-tb323fu/tests/test_tb323fu_usb_port.py\n'
+    python3 devices/lenovo-tb323fu/tests/test_tb323fu_usb_port.py
+    run_device_speaker_test
 }
 
 run_linux_tests() {
@@ -53,8 +82,12 @@ run_linux_tests() {
         bash "$test_file"
         count=$((count + 1))
     done
+    run_device_speaker_test
+    count=$((count + 1))
     printf 'Completed %d shell test files.\n' "$count"
-    run_python_tests
+    run_python_tests true
+    printf '%s\n' \
+        'Special suites not run by the Linux default: root (just test-root), disk (just test-installer-disk), GUI (just test-installer-gui), OSTree (just test-ostree).'
 }
 
 case "${1:-}" in
@@ -64,6 +97,9 @@ case "${1:-}" in
     python)
         require_commands python3
         run_python_tests
+        ;;
+    device)
+        run_device_tests
         ;;
     root)
         require_commands python3

@@ -24,13 +24,7 @@ check: test
 
 [group('Test')]
 test:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    shopt -s nullglob
-    for test_file in tests/*-test.sh; do
-        echo "Running test: ${test_file}"
-        bash "${test_file}"
-    done
+    bash tests/run-tests.sh linux
 
 [group('Test')]
 test-linux:
@@ -39,6 +33,10 @@ test-linux:
 [group('Test')]
 test-python:
     bash tests/run-tests.sh python
+
+[group('Test')]
+test-device:
+    bash tests/run-tests.sh device
 
 [group('Test')]
 test-root:
