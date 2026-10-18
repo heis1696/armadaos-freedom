@@ -32,6 +32,30 @@ test:
         bash "${test_file}"
     done
 
+[group('Test')]
+test-linux:
+    bash tests/run-tests.sh linux
+
+[group('Test')]
+test-python:
+    bash tests/run-tests.sh python
+
+[group('Test')]
+test-root:
+    bash tests/run-tests.sh root
+
+[group('Test')]
+test-installer-disk:
+    bash tests/run-tests.sh disk
+
+[group('Test')]
+test-installer-gui:
+    bash tests/run-tests.sh gui
+
+[group('Test')]
+test-ostree:
+    bash tests/run-tests.sh ostree
+
 [group('Just')]
 fix:
     #!/usr/bin/bash
