@@ -1,19 +1,19 @@
-# 联想拯救者 Y700 无极（TB324ZC）Linux/ArmadaOS 兼容性调研（返修）
+# 联想拯救者 Y700 无极（TB324ZC）Linux/ArmadaOS 兼容性调研
 
 > 目标机型：**Lenovo Legion Y700 无极 / Y700 Infinite / Legion Y700 AI Infinite 5G，型号 TB324ZC**（中国版 ZUXOS）。
 > 基线：本仓库 `devices/lenovo-tb323fu/` 的 TB323FU（Y700 五代，SM8850P，board `baldur`）。
 > 调研日期：**2026-10-19**。本文是只读调研：不新增设备支持、不移植设备树、不提供刷写步骤。
-> 返修说明：在提交 `11f88bf` 基础上修正口径。原稿把固定快照的 164 Hz/90 Hz 当成项目现状，把快照的 s2idle/充电/吞吐当成已验收，并称官方手册未找到；本稿改为“固定快照 / 本分支当前状态 / 目标机证据”三层，补入手册核读结果，删除无来源的硬性验收承诺。
+> 本文分别引用固定上游快照、本分支当前状态和目标机公开资料；上游测试记录不代表本分支或 TB324ZC 已通过验收。
 
 ## 摘要
 
-TB324ZC 是 2026 年的 Y700 无极：8.4 英寸 2560×1600 165 Hz OLED、第五代骁龙 8“至尊领先版”（官方最高 4.74 GHz，Geekbench 报 QTI SM8850）、5G、双 Type-C。它与 TB323FU 同属 SM8850 家族，但板级几乎全换：下游 DT 的 `compatible` 是 `lenovo,wuji`/`qcom,canoe`，面板节点为天马 RM693A0（下游证据，实机批次待核），触控/音频/电源/5G 都需要新板级数据；本仓库的 TB323FU 镜像、DTB、GBL、面板时序不能直接套用。
+TB324ZC 是 2026 年的 Y700 无极：8.4 英寸 2560×1600 165 Hz OLED、第五代骁龙 8“至尊领先版”（官方最高 4.74 GHz，Geekbench 报 QTI SM8850）、5G、双 Type-C。它与 TB323FU 同属 SM8850 家族，但显示、触控等板级配置不同：下游 DT 的 `compatible` 是 `lenovo,wuji`/`qcom,canoe`，面板节点为天马 RM693A0（下游证据，实机批次待核），音频、电源和 5G 的板级数据也需核对；本仓库的 TB323FU 镜像、DTB、GBL、面板时序不能直接套用。
 
-必须区分三个对象。**固定上游快照** `11a25bf8` 的 `0109` 加的是 90/164 Hz，`docs/hardware-status.md` 的 90Hz/164Hz/PD/PPS/s2idle 9/9/Wi-Fi soak 都是 TB323FU 快照记录，不是本分支或 TB324ZC 的验收结果。**本分支当前状态**用 `runtime-fixes/0109` 替换为 90/165 Hz；`165hz.md` 说明 165 Hz 候选保留 120 Hz 水平时序、Htotal 2244、Vtotal 3120、像素时钟 1155211 kHz（约 164.99997 Hz），补丁头明确写“165 candidate untested”；`README.md` 仍把“90 Hz 偶发物理花屏”列为未解决。因此不能把“项目改用 164 Hz、90 Hz 可用”写成当前状态，也不能说 165 Hz 已验收。
+**固定上游快照** `11a25bf8` 的 `0109` 加的是 90/164 Hz，`docs/hardware-status.md` 的显示、充电、休眠与 Wi-Fi 测试均为该快照的记录。**本分支**用 `runtime-fixes/0109` 替换为 90/165 Hz；`165hz.md` 给出的 165 Hz 时序约为 164.99997 Hz，同时明确补丁头反映开发时的历史状态，部署报告保存在仓库外。因此不能从旧补丁头推断当前未上机，也不能据此宣称已完成验收。当前 `README.md` 仍把“90 Hz 偶发物理花屏”列为未解决。
 
 官方资料已找到并核读：`iknow` 页面 442112 的接口返回《联想AI平板 拯救者Y700无极（TB324ZC）用户指南》V1.0，并给出 PDF；本次已下载并抽取正文（47 页）。手册第 38 页（印刷页 33）只写“USB-C1/C2 接口”，没有逐口 USB 版本/DP/PD 说明。故双口存在有官方手册支持，逐口能力仍未证实。
 
-双 Type-C 原结论保留：官方规格/手册、LTBox `b4dd78f` 修正、下游单 `dwc3` 均支持“双口”；但“两口都支持 USB3/DP/PD”没有证据。公开 Linux 侧仍无 wuji 主线 DTB、补丁或 TB324ZC 启动证据；LTBox/GBL 是伪解锁与刷机工具，不等于原生 Linux。建议按“Android 只读采集 → 最小 DT/initramfs → 显示/触控 → USB/音频/电源 → Wi-Fi/5G”推进；未决项集中在面板批次、触控/功放型号、逐口 USB、电池参数、modem 固件与解锁路径。
+官方规格、手册与 LTBox `b4dd78f` 修正确认双 Type-C；但“两口都支持 USB3/DP/PD”没有证据。本文检索范围内未找到 wuji 主线 DTB、补丁或 TB324ZC 原生 Linux 启动记录；LTBox/GBL 工具支持不等于原生 Linux 可启动。建议先完成 Android 下的只读信息采集，再评估最小 DT/initramfs、显示触控、GPU 与 Wi-Fi；5G/VoLTE 单独研究，不作为首个原生 Linux 验证版本的默认承诺。
 
 ## 0. 口径：先分清三个对象
 
@@ -28,7 +28,7 @@ TB324ZC 是 2026 年的 Y700 无极：8.4 英寸 2560×1600 165 Hz OLED、第五
 ## 1. 官方资料：手册已找到并读取
 
 - 详情页：<https://iknow.lenovo.com.cn/detail/442112>（SPA；正文可由接口 `https://iknow.lenovo.com.cn/api/knowledge/knowledgeDetails?knowledgeNo=442112` 读取）。
-- 接口返回（读取成功）：标题“联想AI平板 拯救者Y700无极（TB324ZC）用户指南”，版本 **V1.0**，`createTime 2026-09-01`，并给出用户手册 PDF 链接；与领队提取结果一致。
+- 接口返回：标题“联想AI平板 拯救者Y700无极（TB324ZC）用户指南”，版本 **V1.0**，`createTime 2026-09-01`，并给出用户手册 PDF 链接。
 - PDF：<https://chinakb.lenovo.com.cn/chinakb/prod-api/file/downloadFile?key=uniko%2FFILE%2Ff20b8dab31ac68386a5d348de6ecb147-1788224895457.pdf>。本次已成功下载并抽取文本：47 页，`CreationDate 2026-08-31`。
 - **接口说明核读结果**：手册没有逐口接口规格。唯一直接提到口的是第 38 页（印刷页 33）“将充电仓连接至平板的 **USB-C1/C2** 接口”；安全页只写“USB 2.0 及以上”的通用充电说明，不能据此推断任一数据口的 USB 版本。
 - 结论：**双口存在有官方手册支持；“哪个口是 USB3/DP、各自 PD/PPS/OTG 能力”仍无官方逐口说明。**
@@ -40,7 +40,7 @@ TB324ZC 是 2026 年的 Y700 无极：8.4 英寸 2560×1600 165 Hz OLED、第五
 | 型号 | 拯救者 Y700 无极；TB324ZC | 官方手册 V1.0；官方商城 |
 | SoC | 第五代骁龙 8 至尊领先版，最高 4.74 GHz；Geekbench 报 QTI SM8850、`wuji_prc_consumer_5G` | 官方规格；Geekbench；实际 SKU/频率待实机 |
 | 屏幕 | 8.4" 2560×1600 165 Hz OLED | 官方规格；面板型号见 §2，属下游证据，实机批次待核 |
-| 内存/存储 | 24 GB / 1 TB（**一种 SKU**） | XDA 标题；官方配置表未见；Geekbench 仅给型号/SoC；其他容量组合不作保证 |
+| 内存/存储 | 24 GB / 1 TB（**一种 SKU**） | 联想官方产品 Wiki 1056713；不同容量机型需另核 |
 | 电池/充电 | 7470 mAh 典型值；充电功率官方未给，零售页称 68 W（非官方，未核验） | 官方规格/零售页；不作验收指标 |
 | 接口 | 双 Type-C（手册称 USB-C1/C2） | 官方手册/规格；逐口能力未证实 |
 | 网络 | 5G 全网通；手册提到 SIM 卡 | 官方规格/手册；双卡、频段、VoLTE 待核 |
@@ -68,24 +68,24 @@ TB324ZC 是 2026 年的 Y700 无极：8.4 英寸 2560×1600 165 Hz OLED、第五
 |---|---|---|---|
 | A-补丁 | `.../tb323fu-linux-11a25bf8.../kernel/patches/0109-drm-panel-nt36523-baldur-add-90-Hz-and-164-Hz-modes.patch` | 加 90 Hz（vendor `dtiming@5`）和 164 Hz；头注：90 Hz 实测 90 Hz、0 underrun、触控正常；164 Hz 实测 163 Hz、0 underrun、25 s 无 DSI/DPU/touch 错误；vendor 165/144 每帧 underrun | 固定快照补丁；短测；**不覆盖本分支 165 候选** |
 | A-状态 | `.../docs/hardware-status.md`（2026-10-04） | 90 Hz ✅、164 Hz ✅、vendor 165 ❌、144 ❌；164 长会话未观察 | TB323FU 快照记录，**不是本分支/本机验收** |
-| B-补丁 | `devices/lenovo-tb323fu/kernel/runtime-fixes/165hz.md` + `0109-drm-panel-nt36523-baldur-add-90-Hz-and-165-Hz-modes.patch` | 替换快照 `0109`；加 90 Hz 和 165 Hz；165 保留 120 Hz 水平时序，Htotal 2244、Vtotal 3120、像素时钟 1155211 kHz ≈ 164.99997 Hz；补丁头明确“165 candidate untested”，164 的 25 s 测试不适用 | **本分支代码记录**；不是验收报告 |
+| B-补丁 | `devices/lenovo-tb323fu/kernel/runtime-fixes/165hz.md` + `0109-drm-panel-nt36523-baldur-add-90-Hz-and-165-Hz-modes.patch` | 替换快照 `0109`；加 90 Hz 和 165 Hz；165 保留 120 Hz 水平时序，Htotal 2244、Vtotal 3120、像素时钟 1155211 kHz ≈ 164.99997 Hz；164 的 25 s 测试不适用 | 补丁头是开发时的历史说明；当前构建、部署报告在仓库外，不能从该头部判断最新验收状态 |
 | B-文档 | `devices/lenovo-tb323fu/README.md` | 当前列 30/60/90/120/165，称“真实 165 Hz 面板时序”，旧内核可回退 164 Hz；已知限制写“90 Hz 偶发物理花屏……未完全解决” | 本分支文档声明，仍列未解决项 |
 
 由此得到三条明确结论：
 
 1. “项目改用 164 Hz（120 Hz 水平时序）、90 Hz 可用”只对应 **A 的快照 0109 与短测**，不能写成 B 的当前状态，更不能写成 TB324ZC 的结果。
-2. “本分支有 165 Hz 替换补丁”为真；但“165 Hz 已验收”没有仓库证据，补丁头自己写明该候选未测。
+2. 本分支有 165 Hz 替换补丁，但仓库未提供最新实机验收报告；历史补丁头不足以证明当前“未测”或“已验收”。
 3. B 仍把“90 Hz 偶发物理花屏”列为未解决，因此“90 Hz 可用”只能作为 A 的短测记录，不能作为 B 的验收结论。对 TB324ZC，下游 DT 列了 120/165/144/60/30，但那是 Android 面板节点，没有 Linux 下 RM693A0 的 mode set/underrun 记录。
 
 ## 4. 双 Type-C：结论保留，能力仍待测
 
-**结论：TB324ZC 是双 Type-C；“single USB-C”是 LTBox 的旧错误，已被其上游修正。领队已核验 `b4dd78f`，本稿保留该结论。**
+**TB324ZC 是双 Type-C；LTBox 早期的“single USB-C”描述已由提交 `b4dd78f` 修正。**
 
 1. 官方手册 V1.0 第 38 页写“USB-C1/C2 接口”；官方规格页写“双 Type-C”。
 2. LTBox `2002864b`（2026-09-09）首次加入 TB324ZC 时写 “exposes a single USB-C port”，`dual_usb` 未置位。
 3. LTBox `b4dd78f`（2026-09-10，标题 “TB324ZC has two USB-C ports, not one”）把 `dual_usb` 改为 `true`，测试改为 `assert!(tb324zc.dual_usb && tb323fu.dual_usb)`。
 4. 当前 `capabilities.rs`（`9ac1ad2`，2026-10-05）仍为 `dual_usb: true`；注释写明 shares TB323FU's efisp/GBL route, multi-image Sahara manifest and dual USB-C ports。
-5. 下游 `canoe-usb.dtsi` 只有一个 `dwc3`，与 TB323FU 的“单 dwc3 + 双口复用”同构；这支持“双口”，但不决定口间能力。
+5. 下游 `canoe-usb.dtsi` 可见一个 `dwc3`，仅提供控制器拓扑线索；控制器数量不能独立证明接口数量、复用方式或逐口能力。
 
 可以说：**双 Type-C 已确认**。不可以说：**两个口都支持 USB3/DP/PD**。需要实机确认：口间映射、SS/DP 所在侧、PD/PPS、OTG、eUSB2 repeater 与 mux GPIO。
 
@@ -96,7 +96,7 @@ TB324ZC 是 2026 年的 Y700 无极：8.4 英寸 2560×1600 165 Hz OLED、第五
 | 启动 | LTBox 的 EDL/GBL/Sahara 模型、kShimC 菜单、init_boot KernelSU 方式 | wuji 的 ABL/efisp/GBL、boot 布局、AVB/vbmeta、回滚、分区备份 | 先只读采集 `getvar`/ABL/分区；写入另评审，本文不提供步骤 |
 | 内核/DT | 主线 kaanapali SoC、TB323FU 的 SoC 级补丁、config 片段 | 新增 `lenovo,wuji` 板级 DT；内存/存储/固件路径；`canoe`→`kaanapali` 映射 | 最小 DT → initramfs → 串口/显示；`make dtbs` 与 dtc 警告作为门禁 |
 | 显示/触控 | DRM/MSM、DSI/DPU/DSC、双 DSI、panel 框架；Goodix 主线驱动可能性 | RM693A0 驱动/时序、DSI PHY/clock/lane、背光/reset/TE、Goodix 型号/固件/笔 | 先移植 vendor 初始化序列与 timing，再逐模式记录 underrun；触控先 probe |
-| GPU | Adreno 840 的 msm/freedreno/turnip、GPU SMMU/GPUCC | wuji 的 zap shader、OPP、热/功耗、冷却图 | 保守频率起步，逐档验证；不要复用 baldur 的 zap |
+| GPU | Adreno 840 的 msm/freedreno/turnip、GPU SMMU/GPUCC | 核对 wuji 的 zap shader、OPP、热/功耗、冷却图 | 使用与本机匹配的固件，保守频率起步，逐档验证 |
 | USB | dwc3、QMP combo、eUSB2、UCSI/pmic-glink、Type-C/PD/DP 框架 | 口间 mux、PD/PPS、repeater/redriver、DP lane、唤醒 | 先单口 host/gadget，再第二口；记录 `typec` 角色 |
 | 音频 | AW882xx 驱动、I2S、扬声器保护/UCM 思路 | 功放地址/复位/供电/校准、Codec 型号、麦克风/耳机路由、UCM | 先读下游节点并 probe 功放，再逐路调通；不假设 Codec |
 | 电源 | qcom_battmgr、pmic-glink、充电/热框架、旁路 helper 思路 | 电池曲线/容量、充电/旁路阈值、PMIC GPIO、热区/冷却图 | 先只读电量/温度，再开充电与旁路；参数按实机重标 |
@@ -107,14 +107,16 @@ TB324ZC 是 2026 年的 Y700 无极：8.4 英寸 2560×1600 165 Hz OLED、第五
 
 | 阶段 | 可采集/验证 | 能说明什么 |
 |---|---|---|
-| **Android（root，只读）** | `/proc/device-tree/compatible`、`qcom,msm-id`、`qcom,board-id`；`getprop`；`fastboot getvar`；`/sys/class/typec` 角色；`lsusb -t`/`lspci -nn`；`dmesg` 的 panel/dsi/goodix/aw882/wcd；`/sys/bus/i2c/devices`；`power_supply` uevent；WCN PCI ID；`mmcli`/`mhi`/`qrtr`/`rmtfs` 日志；`lsblk`/GPT；机身标签与口位照片 | 这些都是硬件配置、固件与厂商实现的证据；**不能证明 Linux 驱动可用** |
-| **Linux 启动后（项目）** | DRM panel probe/mode set/underrun；触控与笔；音频路由；USB 角色/DP/PD；充电/旁路/s2idle；Wi-Fi soak；modem/SIM/数据 | TB324ZC 目前无公开 Linux 启动证据；上述全部属于待做项，不是已验收项 |
+| **Android（无需 root 的部分）** | 设置中的型号、系统版本和容量；按项读取产品/系统版本 `getprop`；两口位置与外设使用情况 | 先确认实际 SKU 和固件版本；不需要序列号、IMEI 或完整属性转储 |
+| **Android（已有 root，只读）** | 读取可访问的 DT compatible/msm-id/board-id、已枚举的 SPI/I2C 设备、Type-C 角色、面板/触控/音频日志、电池容量和热区；工具与路径依固件而异 | 记录实际厂商配置；无需主动扫描 I2C 总线，也不为采集信息而执行解锁或 root 操作 |
+| **Bootloader（设备已处于该模式时）** | 主机端按项查询 product/current-slot/unlocked；记录支持的命令、ABL 与 AVB 状态 | `fastboot` 是主机工具，不是 Android shell 命令；“locked/green”不能单独证明没有 GBL 修改 |
+| **Linux 启动后（项目）** | DRM panel probe/mode set/underrun；触控与笔；音频路由；USB 角色/DP/PD；充电/旁路/s2idle；Wi-Fi；安装了 ModemManager 后的 `mmcli`、modem/SIM/数据 | 本文未找到 TB324ZC 原生 Linux 启动证据；这些是待验证项，Android 通常不提供 `mmcli` |
 
 ## 7. 未决项
 
 1. **面板批次**：实机是否确为 RM693A0/天马？与下游 `dvt2`/`dsc` 哪个节点对应？——用实机 panel ID、vendor 校准文件、开机 dmesg 关闭。
 2. **触控/笔**：Goodix 控制器型号、固件版本、笔协议与中断/reset GPIO。——用 SPI/I2C 枚举、`dmesg`、笔事件关闭；主线 `goodix` 是否匹配尚不知。
-3. **音频**：AW882xx 的 chip ID/地址/复位/供电，Codec 实际是 WCD9395 还是 9378/937x。——用 i2c 扫描、`/proc/asound/cards`、dmesg 关闭。
+3. **音频**：AW882xx 的 chip ID/地址/复位/供电，Codec 实际是 WCD9395 还是 9378/937x。——从已枚举的 I2C 设备、`/proc/asound/cards`、dmesg 与本机 DT 核对。
 4. **USB 逐口能力**：C1/C2 谁是 SS+DP、谁是 USB2；PD/PPS/OTG；mux/repeater。——用两口分别插充电器、Hub、U 盘、DP 转换器的矩阵测试关闭；不预设分辨率/功率档位。
 5. **电源**：电池设计容量/曲线、充电与旁路阈值、热区；零售页 68 W 是否真实。——用 `power_supply` uevent 与充电实测关闭，不作硬性承诺。
 6. **5G**：modem 固件/mcfg、IPA/SMEM、SIM 槽、IMS；初始化卡住是否会复位整机。——用 `mmcli`、qrtr/mhi 日志与持续观察关闭；不可控就保持 mask，与 TB323FU 现状一致。
@@ -143,7 +145,7 @@ TB324ZC 是 2026 年的 Y700 无极：8.4 英寸 2560×1600 165 Hz OLED、第五
 | <https://github.com/Lenovo-SM8850/android_kernel_lenovo_sm8850-devicetrees/blob/lineage-24.0/lenovo/wuji-canoe-overlay-input-sensors.dtsi> | `touch@0`（`qupv3_se19_spi`） | 2026-10-19 读取 |
 | <https://github.com/Lenovo-SM8850/android_kernel_lenovo_sm8850-devicetrees/blob/lineage-24.0/qcom/canoe-usb.dtsi> | 单个 `ssusb@a600000` + QMP USB3/DP PHY | 2026-10-19 读取 |
 | <https://github.com/Lenovo-SM8850/android_device_lenovo_wuji/blob/cnb/proprietary-files.txt> | Goodix 触控固件/服务、AW882xx 校准文件 | 2026-10-19 读取 |
-| <https://github.com/miner7222/LTBox/commit/b4dd78f4f62d935ef398cbe213c43baf3de9809> | 单口→双口修正 | 2026-09-10；领队已核验 |
+| <https://github.com/miner7222/LTBox/commit/b4dd78fb4f62d935ef398cbe213c43baf3de9809> | 单口→双口修正 | 2026-09-10 |
 | <https://github.com/miner7222/LTBox/commit/2002864b0211ccfb8667f30a67d8c2560ca7eca8> | 首次加入 TB324ZC | 2026-09-09 |
 | <https://github.com/miner7222/LTBox/blob/9ac1ad2ca2cb48edffeb3f52aa424a5a5aa2f642/crates/ltbox-core/src/model/capabilities.rs#L130-L142> | TB324ZC 能力表（双口） | 2026-10-05 |
 | <https://github.com/yu1101610062/y700-wuji-droidspaces-kernel> | 原厂 GKI 6.12.38 重编译，非原生 Linux | 2026-10-05 |
