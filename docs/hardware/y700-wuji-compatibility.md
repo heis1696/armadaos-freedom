@@ -5,6 +5,10 @@
 > 调研日期：**2026-10-19**。本文是只读调研：不新增设备支持、不移植设备树、不提供刷写步骤。
 > 本文分别引用固定上游快照、本分支当前状态和目标机公开资料；上游测试记录不代表本分支或 TB324ZC 已通过验收。
 
+后续核读已补充[原厂锁定状态的启动路线](y700-wuji-boot-options.md)、
+[原生 Linux 验证方案](y700-wuji-native-linux-plan.md)和[无 root 只读采集工具](y700-wuji-readonly-check.md)。
+用户目前确认设备为原厂、未解锁、无 root，完整固件版本尚待提供。
+
 ## 摘要
 
 TB324ZC 是 2026 年的 Y700 无极：8.4 英寸 2560×1600 165 Hz OLED、第五代骁龙 8“至尊领先版”（官方最高 4.74 GHz，Geekbench 报 QTI SM8850）、5G、双 Type-C。它与 TB323FU 同属 SM8850 家族，但显示、触控等板级配置不同：下游 DT 的 `compatible` 是 `lenovo,wuji`/`qcom,canoe`，面板节点为天马 RM693A0（下游证据，实机批次待核），音频、电源和 5G 的板级数据也需核对；本仓库的 TB323FU 镜像、DTB、GBL、面板时序不能直接套用。
@@ -54,7 +58,7 @@ TB324ZC 是 2026 年的 Y700 无极：8.4 英寸 2560×1600 165 Hz OLED、第五
 |---|---|---|---|
 | SoC/板级 | SM8850P，`kaanapali`，board `baldur` | 官方“领先版”4.74 GHz；下游 `wuji-canoe-base.dts`：`compatible = "lenovo,wuji", "qcom,canoe"`、`msm-id 0x294` | SoC 级可复用；OPP、固件路径、板级数据不可套用；`canoe` 与 `kaanapali` 不是可互换 compatible |
 | 显示 | CSOT NT36523/36536 TDDI，1904×3040，双 DSI，DSC；快照 90/164 Hz | 下游 `wuji-canoe-overlay-display.dtsi`：`wuji_rm693a0_tianma_dvt2_cmd` / `wuji_rm693a0_tianma_dsc_cmd`，面板名 `rm693a0 ... tianma ... DSC 10bit`，宽 `0x640`=1600；timing 为 120/165/144/60/30 Hz；vendor 有对应校准文件 | 下游节点只能证明该 Android 配置用过 RM693A0；**实机面板型号/批次待核，不写成全批次保证**；主线无 RM693A0 驱动 |
-| 触控 | Novatek NT36536 TDDI，SPI19，带笔 | 下游 input overlay 在 `qupv3_se19_spi` 下有 `touch@0`；vendor 清单含 `goodix_config.bin`、`goodix_firmware.bin`、`vendor.lenovo.hardware.touchscreen-service` | 可能是 Goodix 独立触控；控制器型号、固件版本、笔协议未公开，需实机确认 |
+| 触控 | Novatek NT36536 TDDI，SPI19，带笔 | 下游 `wuji-canoe-overlay-pmic-storage.dtsi:1894` 明确声明 `gt9976n_thp`，SPI19/30MHz、reset GPIO7、IRQ GPIO158；Android device.mk 引用 `thpd` 和 `libgdix_*` | 已有 GT9976N THP 的明确源码线索；需核对实机批次、驱动/用户态协议及笔，不能直接套用通用 Goodix 驱动 |
 | 音频 | 2× AW882xx（I2C `0x34`/`0x37`）+ WCD9395 | 下游 audio overlay：`aw882xx_smartpa@34`/`@37`，同时存在 WCD939x/9378/937x 节点（可能为模板）；vendor 清单含 `aw882xx_cali`/`aw882xx_acf.bin` | 功放系列有证据；具体 chip ID、地址、复位/供电、Codec 实际装配待核 |
 | 电源 | pmic-glink、PMIH0108、PMK8850 等 | 下游 PMK8850、PMIH010x、PMH0101/0110/0104；电池 7470 mAh | 驱动框架可复用；电池曲线、充电/旁路阈值、热区、fuel gauge 全重做 |
 | USB | 单个 dwc3 + QMP combo；口0 USB3.2+DP，口1 USB2.0 | 官方双 Type-C；下游 `canoe-usb.dtsi` 只有 1 个 `ssusb@a600000` + `qcom,canoe-qmp-usb3-dp-phy` | 拓扑可能同源；逐口映射、SS/DP 所在侧、PD/PPS、mux/repeater 待测 |
@@ -115,7 +119,7 @@ TB324ZC 是 2026 年的 Y700 无极：8.4 英寸 2560×1600 165 Hz OLED、第五
 ## 7. 未决项
 
 1. **面板批次**：实机是否确为 RM693A0/天马？与下游 `dvt2`/`dsc` 哪个节点对应？——用实机 panel ID、vendor 校准文件、开机 dmesg 关闭。
-2. **触控/笔**：Goodix 控制器型号、固件版本、笔协议与中断/reset GPIO。——用 SPI/I2C 枚举、`dmesg`、笔事件关闭；主线 `goodix` 是否匹配尚不知。
+2. **触控/笔**：核对实机与下游 `gt9976n_thp` 声明是否一致，追踪 THP 驱动、`thpd`/`libgdix_*` 依赖、固件版本与笔协议；已有 reset/IRQ GPIO 源码数据仍需按本机核对。主线 Berlin SPI 匹配表没有该 compatible。
 3. **音频**：AW882xx 的 chip ID/地址/复位/供电，Codec 实际是 WCD9395 还是 9378/937x。——从已枚举的 I2C 设备、`/proc/asound/cards`、dmesg 与本机 DT 核对。
 4. **USB 逐口能力**：C1/C2 谁是 SS+DP、谁是 USB2；PD/PPS/OTG；mux/repeater。——用两口分别插充电器、Hub、U 盘、DP 转换器的矩阵测试关闭；不预设分辨率/功率档位。
 5. **电源**：电池设计容量/曲线、充电与旁路阈值、热区；零售页 68 W 是否真实。——用 `power_supply` uevent 与充电实测关闭，不作硬性承诺。
