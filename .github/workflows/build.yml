@@ -99,6 +99,15 @@ jobs:
         with:
           ref: ${{ github.sha }}
 
+      - name: Verify release signing config
+        run: |
+          set -euo pipefail
+          # Release gate: fails closed before any build or registry write unless
+          # this GitHub repository matches release.json image_repository and the
+          # fork public key exists and is a valid public key. PR and local dev
+          # builds never run this workflow, so they need no key.
+          python3 .github/scripts/verify-release-config.py
+
       - name: Install just
         uses: ublue-os/just-action@30ab4659369934b65b655bf8d2fa4ddd6547d384 # v3
 
@@ -285,15 +294,19 @@ jobs:
               "${IMAGE_REF}"
           fi
 
-          if [ "${{ github.event.repository.fork }}" != "true" ]; then
-            cosign verify --key system_files/etc/pki/containers/armada.pub "${IMAGE_REF}"
-            if [ "${IMAGE_FULL}" = "${ARMADA_LEGACY_IMAGE}" ]; then
-              cosign verify --check-claims=false \
-                --key system_files/etc/pki/containers/armada.pub \
-                "${IMAGE_REF}" |
-                jq -s -e --arg identity "${ARMADA_CANONICAL_IMAGE}" \
-                  'any(.. | objects; .critical?.identity?["docker-reference"]? == $identity)'
-            fi
+          # Self-verify with this repository's own release key — the same
+          # identity and key the client policy enforces for fork images.
+          # Forks verify too; there is no skip path.
+          RELEASE_PUBKEY="system_files$(jq -r '.public_key_path' system_files/usr/share/armada/release.json)"
+          cosign verify --key "${RELEASE_PUBKEY}" "${IMAGE_REF}"
+
+          # Legacy-hosted images also need the canonical identity required by bridge policy.
+          if [ "${IMAGE_FULL}" = "${ARMADA_LEGACY_IMAGE}" ]; then
+            cosign verify --check-claims=false \
+              --key "${RELEASE_PUBKEY}" \
+              "${IMAGE_REF}" |
+              jq -s -e --arg identity "${ARMADA_CANONICAL_IMAGE}" \
+                'any(.. | objects; .critical?.identity?["docker-reference"]? == $identity)'
           fi
         env:
           HAVE_SIGNING_SECRET: ${{ secrets.SIGNING_SECRET != '' }}

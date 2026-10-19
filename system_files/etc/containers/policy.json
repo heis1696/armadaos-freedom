@@ -6,6 +6,16 @@
     ],
     "transports": {
         "docker": {
+            "ghcr.io/heis1696/armadaos-freedom": [
+                {
+                    "type": "sigstoreSigned",
+                    "keyPaths": ["/etc/pki/containers/freedom.pub"],
+                    "signedIdentity": {
+                        "type": "exactRepository",
+                        "dockerRepository": "ghcr.io/heis1696/armadaos-freedom"
+                    }
+                }
+            ],
             "ghcr.io/virtudude/armada": [
                 {
                     "type": "sigstoreSigned",

@@ -19,8 +19,6 @@ on:
         default: ""
 
 env:
-  ARMADA_CANONICAL_IMAGE: "ghcr.io/armada-os/armada"
-  ARMADA_LEGACY_IMAGE: "ghcr.io/virtudude/armada"
   IMAGE_NAME: ${{ github.event.repository.name }}
   IMAGE_REGISTRY: "ghcr.io/${{ github.repository_owner }}"
 
@@ -40,6 +38,14 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Verify release signing config
+        run: |
+          set -euo pipefail
+          # Release gate: fails closed before any registry read or write unless
+          # this GitHub repository matches release.json image_repository and the
+          # fork public key exists and is a valid public key.
+          python3 .github/scripts/verify-release-config.py
 
       - name: Prepare environment
         run: |
@@ -64,19 +70,14 @@ jobs:
         run: |
           set -euxo pipefail
           REPO="${IMAGE_REGISTRY}/${IMAGE_NAME}"
+          # Same repository identity and release key as the build-time
+          # self-verify and the on-device client policy.
+          RELEASE_PUBKEY="system_files$(jq -r '.public_key_path' system_files/usr/share/armada/release.json)"
           # Pin to the digest so verify and the retag below act on the same image
           # even if a concurrent build re-points the source tag in between.
           DIGEST=$(skopeo inspect --format '{{.Digest}}' "docker://${REPO}:${{ inputs.source }}")
-          # Fail closed: never promote an unsigned build into beta/stable.
-          cosign verify --key system_files/etc/pki/containers/armada.pub "${REPO}@${DIGEST}"
-          if [ "${REPO}" = "${ARMADA_LEGACY_IMAGE}" ]; then
-            # Legacy promotions must carry the canonical identity required by bridge policy.
-            cosign verify --check-claims=false \
-              --key system_files/etc/pki/containers/armada.pub \
-              "${REPO}@${DIGEST}" |
-              jq -s -e --arg identity "${ARMADA_CANONICAL_IMAGE}" \
-                'any(.. | objects; .critical?.identity?["docker-reference"]? == $identity)'
-          fi
+          # Fail closed: never promote an unsigned or foreign-keyed build into beta/stable.
+          cosign verify --key "${RELEASE_PUBKEY}" "${REPO}@${DIGEST}"
           echo "digest=${DIGEST}" >> "${GITHUB_OUTPUT}"
 
       - name: Publish release tags

@@ -81,10 +81,13 @@ staged=$(armada_tag_from_ref "$(armada_staged_ref)")
 if [ "${staged}" != "${desired}" ] && { [ "${desired}" != "${booted}" ] || [ -n "${staged}" ]; } || [ "${verified}" = 0 ]; then
     if ! armada_bootc_with_progress bootc switch --enforce-container-sigpolicy "${repository}:${desired}"; then
         if armada_steam_channels_apply "$repository" "$desired"; then
-            # Unpublished channels must not trigger repeated update offers.
-            mkdir -p "$(dirname "${ARMADA_CHANNEL_STATE}")" 2>/dev/null
-            printf '%s\n' "${booted}" > "${ARMADA_CHANNEL_STATE}" 2>/dev/null \
-                || echo "armada-update: could not revert channel state to ${booted}" >&2
+            # Unpublished channels must not trigger repeated update offers.  A
+            # digest-only source has no booted tag to restore.
+            if [ -n "${booted}" ]; then
+                mkdir -p "$(dirname "${ARMADA_CHANNEL_STATE}")" 2>/dev/null
+                printf '%s\n' "${booted}" > "${ARMADA_CHANNEL_STATE}" 2>/dev/null \
+                    || echo "armada-update: could not revert channel state to ${booted}" >&2
+            fi
         fi
         exit 7
     fi
