@@ -21,8 +21,42 @@ concurrency:
   queue: max
 
 jobs:
+  verify_release_config:
+    name: Release signing gate
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Install verification tools
+        run: |
+          set -euo pipefail
+          # The gate proves the vendored public key parses with openssl; a
+          # missing openssl must fail here instead of downgrading to a PEM
+          # appearance check.
+          need=""
+          for t in openssl; do
+            command -v "$t" >/dev/null || need="$need $t"
+          done
+          [ -z "$need" ] || { sudo apt-get update && sudo apt-get install -y $need; }
+
+      - name: Verify release signing config
+        run: |
+          set -euo pipefail
+          # Release gate: fails closed before any registry write. Both jobs
+          # below that can write to GHCR (packages, build_push) depend on this
+          # one, and it fails without the fork public key, on a repository
+          # identity mismatch, or when the key cannot be validated. PR and
+          # local dev builds never run this workflow, so they need no key.
+          python3 .github/scripts/verify-release-config.py
+
   packages:
     name: Packages
+    needs: verify_release_config
     permissions:
       contents: read
       packages: write
@@ -31,7 +65,7 @@ jobs:
 
   build_push:
     name: Container image
-    needs: packages
+    needs: [verify_release_config, packages]
     runs-on: ubuntu-24.04-arm
     outputs:
       channel: ${{ steps.channel.outputs.channel }}
@@ -102,10 +136,9 @@ jobs:
       - name: Verify release signing config
         run: |
           set -euo pipefail
-          # Release gate: fails closed before any build or registry write unless
-          # this GitHub repository matches release.json image_repository and the
-          # fork public key exists and is a valid public key. PR and local dev
-          # builds never run this workflow, so they need no key.
+          # Defense in depth: the preflight job already gated packages and this
+          # build on this same commit; re-check immediately before build, sign,
+          # and push in case the job wiring ever changes.
           python3 .github/scripts/verify-release-config.py
 
       - name: Install just
@@ -296,17 +329,24 @@ jobs:
 
           # Self-verify with this repository's own release key — the same
           # identity and key the client policy enforces for fork images.
-          # Forks verify too; there is no skip path.
+          # Forks verify too; there is no skip path. cosign key verification
+          # binds only the key and the digest, so verify-signature-result.py
+          # additionally checks the signed repository identity and digest in
+          # the verified payload; an empty or foreign-identity result fails.
           RELEASE_PUBKEY="system_files$(jq -r '.public_key_path' system_files/usr/share/armada/release.json)"
-          cosign verify --key "${RELEASE_PUBKEY}" "${IMAGE_REF}"
+          EXPECTED_IDENTITY="${IMAGE_FULL}"
+          EXPECTED_DIGEST="${{ steps.push.outputs.digest }}"
+          cosign verify --key "${RELEASE_PUBKEY}" "${IMAGE_REF}" |
+            python3 .github/scripts/verify-signature-result.py \
+              --identity "${EXPECTED_IDENTITY}" --digest "${EXPECTED_DIGEST}"
 
           # Legacy-hosted images also need the canonical identity required by bridge policy.
           if [ "${IMAGE_FULL}" = "${ARMADA_LEGACY_IMAGE}" ]; then
             cosign verify --check-claims=false \
               --key "${RELEASE_PUBKEY}" \
               "${IMAGE_REF}" |
-              jq -s -e --arg identity "${ARMADA_CANONICAL_IMAGE}" \
-                'any(.. | objects; .critical?.identity?["docker-reference"]? == $identity)'
+              python3 .github/scripts/verify-signature-result.py \
+                --identity "${ARMADA_CANONICAL_IMAGE}" --digest "${EXPECTED_DIGEST}"
           fi
         env:
           HAVE_SIGNING_SECRET: ${{ secrets.SIGNING_SECRET != '' }}

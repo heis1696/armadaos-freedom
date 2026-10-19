@@ -1,21 +1,27 @@
 #!/usr/bin/env python3
 """Release gate for the fork's signing configuration.
 
-build.yml and promote.yml run this before any registry action. It fails closed
-unless all of the following hold:
+build.yml runs this in a dedicated preflight job that both the packages job
+(which pushes package images) and build_push depend on, so every registry
+write waits for it; promote.yml runs it before any registry action. It fails
+closed unless all of the following hold:
 
-- system_files/usr/share/armada/release.json parses as data, and its
-  image_repository matches the GitHub repository the workflow runs in,
+- system_files/usr/share/armada/release.json validates against the same
+  runtime schema the device uses (system_files/usr/lib/armada/release_config.py:
+  load_release_config), and its image_repository matches the GitHub repository
+  the workflow runs in,
 - the fork public key (release.json: public_key_path, vendored under
-  system_files/) exists and parses as a public key — never a private one, and
+  system_files/) exists and is proven to parse as a public key by openssl —
+  never a private one; a missing openssl is a hard failure in release mode,
+  and
 - the client trust config (containers/policy.json and the sigstore attachment
   registries.d) pins the fork repository to exactly that key and identity
   while keeping the upstream rules intact.
 
 Local development builds and PR builds never invoke this script, so they keep
-working without a key. --allow-missing-key downgrades only the key-presence
-and key-validity checks to warnings for local sanity runs; release workflows
-must not pass it.
+working without a key. --allow-missing-key downgrades only the key-presence,
+key-validity and openssl-availability checks to warnings for local sanity
+runs; release workflows must not pass it.
 """
 
 import argparse
@@ -33,9 +39,10 @@ POLICY_JSON = "system_files/etc/containers/policy.json"
 REGISTRIES_D = "system_files/etc/containers/registries.d/ghcr-armada.yaml"
 SYSTEM_FILES_PREFIX = "system_files"
 
-EXPECTED_SCHEMA_VERSION = 1
 EXPECTED_CHANNELS = ["stable", "beta", "testing"]
 EXPECTED_REGISTRY_HOST = "ghcr.io"
+RELEASE_CONFIG_HELPER_DIR = "system_files/usr/lib/armada"
+RELEASE_CONFIG_HELPER = RELEASE_CONFIG_HELPER_DIR + "/release_config.py"
 KEY_PATH_PATTERN = re.compile(r"^/etc/pki/containers/[A-Za-z0-9._-]+\.pub$")
 REPOSITORY_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*$")
 IMAGE_REPOSITORY_PATTERN = re.compile(
@@ -110,37 +117,65 @@ def load_json(gate: Gate, root: Path, rel_path: str, what: str):
         return None
 
 
-def check_release_json(gate: Gate, root: Path):
-    release = load_json(gate, root, RELEASE_JSON, "release metadata")
-    if release is None:
-        return None
-    if not isinstance(release, dict):
-        gate.error(f"{RELEASE_JSON} must contain a JSON object")
-        return None
+def load_schema_validator(gate: Gate, root: Path):
+    """Import the runtime release-config helper from the tree under check.
 
-    version = release.get("schema_version")
-    if version != EXPECTED_SCHEMA_VERSION:
+    The gate must judge release.json with the same code the device runs, so
+    the helper is loaded from ``root`` (not from this script's checkout). Any
+    failure to load it is a gate error, never a silent downgrade.
+    """
+    helper_path = root / RELEASE_CONFIG_HELPER
+    if not helper_path.is_file():
+        gate.error(f"release config schema helper is missing: {RELEASE_CONFIG_HELPER}")
+        return None
+    helper_dir = str(root / RELEASE_CONFIG_HELPER_DIR)
+    if helper_dir not in sys.path:
+        sys.path.insert(0, helper_dir)
+    try:
+        import release_config
+    except Exception as exc:  # any import failure must fail the gate
         gate.error(
-            f"{RELEASE_JSON}: schema_version must be {EXPECTED_SCHEMA_VERSION}, got {version!r}"
+            f"release config schema helper ({RELEASE_CONFIG_HELPER}) could not be "
+            f"imported: {exc}"
         )
+        return None
+    return release_config
 
-    repository = release.get("image_repository")
-    if not isinstance(repository, str) or not IMAGE_REPOSITORY_PATTERN.match(repository):
+
+def check_release_json(gate: Gate, root: Path):
+    validator = load_schema_validator(gate, root)
+    if validator is None:
+        gate.error("cannot validate release metadata schema")
+        return None
+
+    path = root / RELEASE_JSON
+    if not path.is_file():
+        gate.error(f"release metadata is missing: {RELEASE_JSON}")
+        return None
+    try:
+        config = validator.load_release_config(path)
+    except validator.ReleaseConfigError as exc:
+        gate.error(f"{RELEASE_JSON} failed the runtime release-config schema: {exc}")
+        return None
+
+    # The shared schema accepts any registry and any subset of the channel
+    # tokens; this fork's release contract is stricter and is enforced here.
+    repository = config.image_repository
+    if not IMAGE_REPOSITORY_PATTERN.match(repository):
         gate.error(
             f"{RELEASE_JSON}: image_repository must be a plain {EXPECTED_REGISTRY_HOST}/"
             f"owner/name repository without tag, digest, or transport, got {repository!r}"
         )
         repository = None
 
-    channels = release.get("channels")
-    if channels != EXPECTED_CHANNELS:
+    if list(config.channels) != EXPECTED_CHANNELS:
         gate.error(
-            f"{RELEASE_JSON}: channels must be exactly {EXPECTED_CHANNELS}, got {channels!r}; "
-            "channel changes are a release-identity contract change"
+            f"{RELEASE_JSON}: channels must be exactly {EXPECTED_CHANNELS}, got "
+            f"{list(config.channels)!r}; channel changes are a release-identity contract change"
         )
 
-    key_path = release.get("public_key_path")
-    if not isinstance(key_path, str) or not KEY_PATH_PATTERN.match(key_path):
+    key_path = config.public_key_path
+    if not KEY_PATH_PATTERN.match(key_path):
         gate.error(
             f"{RELEASE_JSON}: public_key_path must be an absolute /etc/pki/containers/*.pub "
             f"path, got {key_path!r}"
@@ -200,7 +235,14 @@ def check_public_key(gate: Gate, root: Path, public_key_path: str) -> None:
 
     openssl = shutil.which("openssl")
     if openssl is None:
-        gate.warn("openssl not available; public key validated structurally only")
+        message = (
+            "openssl is not available; the fork public key cannot be proven to "
+            "parse as a real key — refusing to pass on a PEM appearance check alone"
+        )
+        if gate.allow_missing_key:
+            gate.warn(message + " (allowed by --allow-missing-key for local runs)")
+            return
+        gate.error(message)
         return
     try:
         result = subprocess.run(
@@ -333,7 +375,8 @@ def main() -> int:
     parser.add_argument(
         "--allow-missing-key",
         action="store_true",
-        help="local runs only: warn instead of failing when the fork public key is absent; "
+        help="local runs only: warn instead of failing when the fork public key is absent "
+        "or cannot be cryptographically validated (no key file, no openssl); "
         "release workflows must not pass this",
     )
     args = parser.parse_args()

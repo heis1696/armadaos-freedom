@@ -97,6 +97,46 @@ class OperationTests(unittest.TestCase):
         self.assertEqual(state["channels"], ["stable", "beta", "preview"])
         self.assertEqual(self.command.call_count, 2)
 
+    def pinned_state(self, repository, tag):
+        def entry(version, checksum, image):
+            return {"image": {"version": version, "image": {"image": image}},
+                    "ostree": {"checksum": checksum, "deploySerial": 0, "stateroot": "default"}}
+
+        raw = {"status": {"booted": entry("current", "a" * 64, f"{repository}:{tag}"),
+                          "rollback": None, "staged": None, "rollbackQueued": False}}
+        self.command.side_effect = [json.dumps(raw), f"{repository} {tag}\n"]
+        with tempfile.TemporaryDirectory() as directory:
+            config = json.loads(
+                (ROOT / "system_files/usr/share/armada/release.json").read_text()
+            )
+            config["image_repository"] = repository
+            path = Path(directory) / "release.json"
+            path.write_text(json.dumps(config))
+            with patch.object(maintenance.release_config, "DEFAULT_CONFIG_PATH", str(path)):
+                state = REAL_SNAPSHOT()
+        self.command.reset_mock()
+        patch.object(maintenance, "snapshot", return_value=state).start()
+        return state
+
+    def test_pinned_development_tag_is_fixed_and_has_no_switching_options(self):
+        repository = "ghcr.io/heis1696/armadaos-freedom"
+        state = self.pinned_state(repository, "feature-a")
+        self.assertEqual(state["repository"], repository)
+        self.assertEqual(state["channel"], "feature-a")
+        self.assertEqual(state["channels"], [])
+        with self.assertRaisesRegex(RuntimeError, "unavailable"):
+            maintenance.select_channel("beta")
+        self.command.assert_not_called()
+
+    def test_pinned_tag_named_like_a_visible_channel_is_still_fixed(self):
+        repository = "ghcr.io/heis1696/armadaos-freedom"
+        state = self.pinned_state(repository, "preview")
+        self.assertEqual(state["channel"], "preview")
+        self.assertEqual(state["channels"], [])
+        with self.assertRaisesRegex(RuntimeError, "unavailable"):
+            maintenance.select_channel("preview")
+        self.command.assert_not_called()
+
     def test_no_previous_version_refuses_rollback(self):
         self.state["rollback"] = None
         with self.assertRaisesRegex(RuntimeError, "No compatible previous"):

@@ -16,6 +16,13 @@ case "${1:-}" in
         [[ -n "$repository" ]] || fail "Could not determine the update repository"
         channels="$(armada_repository_channels "$repository")" \
             || fail "Could not load the update channels"
+        # A pinned development tag wins over the stored channel state, so
+        # offering a branch list for it would produce a selection that the
+        # updater ignores.  Expose no choices instead.
+        booted="$(armada_booted_channel)"
+        if [[ -n "$booted" ]] && ! armada_steam_channels_apply "$repository" "$booted"; then
+            exit 0
+        fi
         for ch in $channels; do armada_channel_to_token "$ch"; done
         ;;
     -c)
@@ -31,6 +38,12 @@ case "${1:-}" in
         ;;
     *)
         [[ -n "$repository" ]] || fail "Could not determine the update repository"
+        # The updater always keeps an explicit non-channel tag, so accepting a
+        # channel change here would report success without changing anything.
+        booted="$(armada_booted_channel)"
+        if [[ -n "$booted" ]] && ! armada_steam_channels_apply "$repository" "$booted"; then
+            fail "This image is pinned to the explicit tag $booted; channel selection is unavailable"
+        fi
         channel=$(armada_token_to_channel "$1") \
             || { echo "usage: steamos-select-branch <-l|-c|rel|beta|main>" >&2; exit 1; }
         armada_steam_channels_apply "$repository" "$channel" \

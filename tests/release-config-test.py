@@ -79,6 +79,7 @@ class ReleaseConfigTests(unittest.TestCase):
             "ghcr.io/Heis1696/ArmadaOS",
             "ghcr.io/heis1696/armadaos-freedom:stable",
             "ghcr.io/heis1696/armadaos-freedom@sha256:deadbeef",
+            "ghcr.io/heis1696/armadaos-freedom@sha256:" + "0123456789abcdef" * 4,
             "docker://ghcr.io/heis1696/armadaos-freedom",
             "containers-storage:localhost/armada:latest",
             "armadaos-freedom",
@@ -91,6 +92,73 @@ class ReleaseConfigTests(unittest.TestCase):
             data["image_repository"] = repository
             with self.subTest(repository=repository):
                 self.assert_invalid(data)
+
+    def test_image_reference_parser_accepts_only_supported_forms(self):
+        digest = "sha256:" + "0123456789abcdef" * 4
+        valid = (
+            ("ostree-image-signed:docker://ghcr.io/heis1696/armadaos-freedom:stable",
+             "ghcr.io/heis1696/armadaos-freedom", "stable", None),
+            (f"ostree-image-signed:docker://ghcr.io/heis1696/armadaos-freedom@{digest}",
+             "ghcr.io/heis1696/armadaos-freedom", None, digest),
+            (f"ostree-image-signed:docker://ghcr.io/heis1696/armadaos-freedom:stable@{digest}",
+             "ghcr.io/heis1696/armadaos-freedom", "stable", digest),
+            ("ostree-unverified-registry:localhost:5000/armada:feature-a",
+             "localhost:5000/armada", "feature-a", None),
+            ("ostree-unverified-image:docker://local.armadaos.dev/armada:feature-a",
+             "local.armadaos.dev/armada", "feature-a", None),
+            ("docker://ghcr.io/armada-os/armada:testing",
+             "ghcr.io/armada-os/armada", "testing", None),
+            ("ostree-unverified-registry:example.invalid/ghcr.io/virtudude/armada:RC_1.0",
+             "example.invalid/ghcr.io/virtudude/armada", "RC_1.0", None),
+        )
+        for reference, repository, tag, digest_value in valid:
+            with self.subTest(reference=reference):
+                parsed = release_config.parse_image_reference(reference)
+                self.assertEqual(parsed.repository, repository)
+                self.assertEqual(parsed.tag, tag)
+                self.assertEqual(parsed.digest, digest_value)
+
+    def test_image_reference_parser_rejects_nested_and_malformed_values(self):
+        digest = "sha256:" + "0123456789abcdef" * 4
+        invalid = (
+            "containers-storage:docker://ghcr.io/heis1696/armadaos-freedom:stable",
+            "garbage:docker://ghcr.io/heis1696/armadaos-freedom:beta",
+            "ostree-unverified-registry:docker://ghcr.io/heis1696/armadaos-freedom:stable",
+            "ostree-image-signed:http://ghcr.io/heis1696/armadaos-freedom:stable",
+            "ostree-image-signed:docker://containers-storage:localhost/armada:latest",
+            "ostree-unverified-registry:containers-storage:localhost/armada:latest",
+            "ostree-unverified-registry:dir:/tmp/armada:latest",
+            "ostree-unverified-registry:oci:archive/armada:latest",
+            "ostree-unverified-registry:",
+            "ostree-image-signed:",
+            "docker://",
+            "",
+            None,
+            "ghcr.io/heis1696/armadaos-freedom:stable",
+            "http://ghcr.io/heis1696/armadaos-freedom:stable",
+            "ostree-unverified-registry:ghcr.io/heis1696/armadaos-freedom:",
+            "ostree-unverified-registry:ghcr.io/heis1696/armadaos-freedom:-bad",
+            "ostree-unverified-registry:ghcr.io/heis1696/armadaos-freedom:bad tag",
+            "ostree-unverified-registry:ghcr.io/heis1696/armadaos-freedom:bad/tag",
+            "ostree-unverified-registry:ghcr.io/heis1696/armadaos-freedom:"
+            + "t" * 129,
+            "ostree-unverified-registry:ghcr.io/heis1696/armadaos-freedom@sha256:deadbeef",
+            "ostree-unverified-registry:ghcr.io/heis1696/armadaos-freedom@md5:" + "a" * 32,
+            "ostree-unverified-registry:ghcr.io/heis1696/armadaos-freedom@sha256:"
+            + "A" * 64,
+            "ostree-unverified-registry:ghcr.io/heis1696/armadaos-freedom@sha256:"
+            + "a" * 63,
+            f"ostree-unverified-registry:ghcr.io/heis1696/armadaos-freedom@{digest}@{digest}",
+            "ostree-unverified-registry:GHCR.IO/heis1696/armadaos-freedom:stable",
+            "ostree-unverified-registry:ghcr.io//armadaos-freedom",
+            "ostree-unverified-registry:ghcr.io/heis1696/../armadaos-freedom",
+            "ostree-unverified-registry:ghcr.io/heis1696/",
+            "ostree-unverified-registry:armadaos-freedom",
+        )
+        for reference in invalid:
+            with self.subTest(reference=reference):
+                with self.assertRaises(release_config.ReleaseConfigError):
+                    release_config.parse_image_reference(reference)
 
     def test_channels_must_be_a_nonempty_known_unique_list(self):
         for channels in (
@@ -139,6 +207,24 @@ class ReleaseConfigTests(unittest.TestCase):
             capture_output=True,
         )
         self.assertNotEqual(result.returncode, 0)
+        self.assertIn("armada-release-config:", result.stderr)
+
+        result = subprocess.run(
+            [sys.executable, str(LIB / "release_config.py"), "--reference",
+             "ostree-unverified-registry:ghcr.io/heis1696/armadaos-freedom:beta"],
+            text=True,
+            capture_output=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "ghcr.io/heis1696/armadaos-freedom\n")
+        result = subprocess.run(
+            [sys.executable, str(LIB / "release_config.py"), "--reference",
+             "containers-storage:docker://ghcr.io/heis1696/armadaos-freedom:stable"],
+            text=True,
+            capture_output=True,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "")
         self.assertIn("armada-release-config:", result.stderr)
 
 

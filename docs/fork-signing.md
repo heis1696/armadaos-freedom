@@ -13,7 +13,7 @@
 | `image_repository` | `ghcr.io/heis1696/armadaos-freedom` | 发布门检、`policy.json` 作用域、sigstore 附件配置 |
 | `public_key_path` | `/etc/pki/containers/freedom.pub` | 客户端策略 `keyPaths`;源码对应 `system_files/etc/pki/containers/freedom.pub` |
 | `channels` | `stable`、`beta`、`testing` | 门检按契约集合校验,改动视为身份契约变更 |
-| `schema_version` | `1` | 门检校验 |
+| `schema_version` | `1` | 门检经运行时 helper 校验(整数 `1`,拒绝重复字段) |
 
 客户端配置(`system_files/etc/containers/`):
 
@@ -28,27 +28,49 @@
 
 ## 发布前校验
 
-`.github/scripts/verify-release-config.py` 是发布门检,在 `build.yml`(构建/推送前)
-与 `promote.yml`(任何 registry 动作前)执行,失败即终止:
+`.github/scripts/verify-release-config.py` 是发布门检:
 
-- `release.json` 能作为数据解析,字段符合上表;
+- `build.yml` 中它是一个独立的前置 job(`verify_release_config`);凡是能写
+  GHCR 的任务——`packages`(推送构建包镜像)与 `build_push`——都以
+  `needs` 依赖它,因此任何发布动作都只能在门检通过后开始。`build_push`
+  内部在签名/推送前再跑一次同一门检,作为接线防退化。
+- `promote.yml` 中它在任何 registry 动作(包括登录)之前执行。两处失败即终止。
+
+门检内容:
+
+- `release.json` 用与设备端相同的运行时 helper
+  (`system_files/usr/lib/armada/release_config.py` 的 `load_release_config`)
+  做 schema 校验——`schema_version` 必须是整数 `1`、重复字段/未知字段拒绝,
+  与运行时行为一致;再叠加本 fork 契约:`ghcr.io/owner/name` 形态、频道恰为
+  `stable`/`beta`/`testing`、公钥路径形态;
 - `GITHUB_REPOSITORY`(Actions 注入)与 `image_repository` 一致,不得在他名下发布;
-- fork 公钥存在于 `system_files` 下对应路径,是可被 openssl 解析的 PEM 公钥;
-  出现 `PRIVATE KEY`/`ENCRYPTED` 标记直接拒绝;
+- fork 公钥存在于 `system_files` 下对应路径,且被 openssl 证明可解析为 PEM 公钥;
+  出现 `PRIVATE KEY`/`ENCRYPTED` 标记直接拒绝;生产模式缺 openssl 直接失败,
+  不降级为"仅检查 PEM 外观";
 - `policy.json`、`registries.d` 与上述身份、公钥互相一致,上游作用域未被删改。
 
-`--allow-missing-key` 只把缺钥降级为警告,供本地无钥自检;发布工作流不使用该参数。
-本地开发构建(`build_files/build.sh`)与 PR 构建(pr.yml,不认证、不推送)不经过
-门检,因此无钥也能运行。
+`--allow-missing-key` 只把缺钥与"无法做密码学验证"(无 openssl)降级为警告,
+供本地无钥自检;发布工作流不使用该参数。本地开发构建(`build_files/build.sh`)
+与 PR 构建(pr.yml,不认证、不推送、仅本地 oci-archive)不经过门检,因此无钥
+也能运行。
 
 ## 构建与晋级中的自验
 
+cosign 按钥验签只绑定密钥与 digest,不校验 ref 中的仓库名(同钥签名的他仓库
+身份照样通过;测试已实证)。因此自验输出一律再经
+`.github/scripts/verify-signature-result.py` 检查:已验签结果必须非空,且至少
+一条签名的 `critical.identity.docker-reference` 等于目标仓库、
+`critical.image.docker-manifest-digest` 等于目标 digest;错误身份或空结果
+一律拒绝。
+
 - `build.yml`:推送 build tag 后用 `release.json` 派生的公钥路径
-  `cosign verify` 自验已推送 digest;`github.event.repository.fork` 不再跳过验证,
-  fork 与上游走同一路径。签名仍按原渠道用 `SIGNING_SECRET`(cosign 加密私钥)完成,
-  签的是 digest 而非 tag。
-- `promote.yml`:晋级前以同一公钥、同一仓库身份验源 tag 的 digest,不通过不复制
-  任何发布 tag;旧上游规范身份附加签名分支随上游工作流保留,不适用于本 fork。
+  `cosign verify` 自验已推送 digest,并经上述 helper 核对身份与 digest;
+  `github.event.repository.fork` 不再跳过验证,fork 与上游走同一路径。签名仍按
+  原渠道用 `SIGNING_SECRET`(cosign 加密私钥)完成,签的是 digest 而非 tag
+  (实测该形态下 payload 身份恰为裸仓库名)。
+- `promote.yml`:晋级前以同一公钥、同一仓库身份验源 tag 的 digest,并经同一
+  helper 核对,不通过不复制任何发布 tag;旧上游规范身份附加签名分支随上游
+  工作流保留,不适用于本 fork。
 
 ## 密钥状态与待办
 
@@ -64,17 +86,23 @@
 ## 验证边界
 
 `tests/fork-signing-test.sh`(自动纳入 `just test` / `tests/run-tests.sh linux`)
-分三层并如实标注:
+分四层并如实标注:
 
 - `[config]`:真实树上的 release.json/policy.json/registries.d 数据断言,以及
-  两个 workflow 的接线断言(门检先于发布动作、无 fork 跳验、自验用配置公钥)。
+  两个 workflow 的接线断言(前置门检 job 先于 packages/build_push、无 fork 跳验、
+  自验与晋级经 helper 核对身份与 digest)。
 - `[script]`:沙箱树中门检的接受/拒绝行为——成功路径、缺钥、误交私钥、
   仓库身份不一致、fork 作用域被删/被改为 accept/被指向上游公钥、上游作用域被删、
-  频道契约变更、附件配置缺失。
+  频道契约变更、`schema_version=true` 与重复字段被运行时 schema 拒绝、
+  schema helper 缺失时门检失败、缺 openssl 生产模式失败/本地模式仅警告、
+  附件配置缺失。
+- `[helper]`:`verify-signature-result.py` 的接受/拒绝——精确身份与 digest
+  通过,空列表、空输出、他仓库身份、错 digest、非数组输出拒绝。
 - `[crypto]`:环境有 cosign 时,用临时密钥做真实离线签名/验签往返(对钥通过、
-  错钥失败、错 digest 失败)。cosign 按钥验签只绑定密钥与 digest,不校验 ref 中
-  的仓库名——fork 身份的精确匹配由 `policy.json` 的 `exactRepository` 承担,
-  这里只做配置断言。
+  错钥失败、错 digest 失败),并走与 CI 相同的
+  "`cosign verify` 输出经 helper 检查"管线:裸仓库身份通过;同一测试密钥签出的
+  他仓库(`ghcr.io/armada-os/armada`)身份在 cosign 验签下依然通过(缺口复现),
+  被 helper 拒绝。测试密钥只在临时目录生成,不入库。
 
 未验证的端到端行为:真实 GHCR 推送、sigstore 附件在 registry 上的取回、设备端
 containers/bootc 按 policy 拒绝的运行时表现。这些依赖远端发布证据,按
