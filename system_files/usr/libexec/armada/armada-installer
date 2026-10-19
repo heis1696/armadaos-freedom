@@ -31,6 +31,14 @@ LINUX_TYPE = "0fc63daf-8483-4772-8e79-3d69d8477de4"
 BTRFS_OPTS = "noatime,compress=zstd:1,discard=async"
 SELF = "/usr/libexec/armada/armada-installer"
 BOOTIMG = "/usr/libexec/armada/armada-bootimg-update"
+DEVICE_TREE = Path("/sys/firmware/devicetree/base")
+UNSUPPORTED_MODELS = frozenset({
+    "Lenovo Legion Y700 Gen 5 (TB323FU)",
+    "Lenovo Legion Tab Y700 (TB323FU)",
+    "Lenovo Legion Tab Y700 5th Gen",
+    "Lenovo Legion Y700 AI Infinite 5G (TB324ZC)",
+})
+UNSUPPORTED_COMPATIBLES = frozenset({"lenovo,baldur", "lenovo,wuji"})
 RECOVERY = ("To retry from SD, select SD as the boot source in ABL and re-run the installer. "
             "To abandon the internal installation, select UNINSTALL CFW in ABL.")
 
@@ -47,6 +55,27 @@ class Interrupted(Error):
     def __init__(self, signum):
         self.signum = signum
         super().__init__(f"operation interrupted by signal {signum}")
+
+
+def check_device_compatibility():
+    try:
+        model_data = (DEVICE_TREE / "model").read_bytes()
+        compatible_data = (DEVICE_TREE / "compatible").read_bytes()
+        if not model_data.endswith(b"\0") or not compatible_data.endswith(b"\0"):
+            raise ValueError("unterminated device-tree identity")
+        model_fields = model_data.split(b"\0")[:-1]
+        compatible_raw = compatible_data.split(b"\0")[:-1]
+        if len(model_fields) != 1:
+            raise ValueError("invalid device-tree model")
+        model = model_fields[0].decode("utf-8")
+        compatibles = {item.decode("ascii") for item in compatible_raw}
+        if not model or not compatible_raw or any(not item for item in compatible_raw):
+            raise ValueError("empty device-tree identity")
+    except (OSError, UnicodeError, ValueError) as error:
+        raise Error(f"Cannot read device-tree model and compatible; refusing installation: {error}") from error
+
+    if model in UNSUPPORTED_MODELS or compatibles & UNSUPPORTED_COMPATIBLES:
+        raise Error(f"{model} is not supported by the Armada installer")
 
 
 def run(*args, capture=False, check=True, input=None, **kwargs):
@@ -633,6 +662,7 @@ def execute(args):
             print(f"Validated source commit: {source.checksum}", flush=True)
         print(f"Source preflight completed in {time.monotonic() - started:.1f} seconds; internal storage was not touched.", flush=True)
         return
+    check_device_compatibility()
     device = discover_device(args.device)
     table = read_table(device)
     if args.command == "detect":
@@ -776,6 +806,7 @@ class Gui:
                         "If internal storage was modified: " + RECOVERY)
 
     def start(self):
+        check_device_compatibility()
         info = json.loads(output(*self.command, "detect", "--json"))
         self.command = ["sudo", SELF, "--device", info["device"]]
         mode = info["mode"]

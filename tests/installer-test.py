@@ -223,7 +223,7 @@ class ExecutionTests(unittest.TestCase):
 
     def test_changed_confirmation_aborts_before_planning(self):
         args = argparse.Namespace(command="install", device="/dev/sda", expect_table="confirmed")
-        with patch.object(i.os, "geteuid", return_value=0), patch.object(i, "discover_device", return_value="/dev/sda"), patch.object(i, "read_table", return_value=table()), patch.object(i, "table_fingerprint", return_value="changed"), patch.object(i.Plan, "make") as make, patch.object(i, "run") as run:
+        with patch.object(i, "check_device_compatibility"), patch.object(i.os, "geteuid", return_value=0), patch.object(i, "discover_device", return_value="/dev/sda"), patch.object(i, "read_table", return_value=table()), patch.object(i, "table_fingerprint", return_value="changed"), patch.object(i.Plan, "make") as make, patch.object(i, "run") as run:
             with self.assertRaisesRegex(i.Error, "changed after confirmation"):
                 i.execute(args)
         make.assert_not_called()
@@ -354,7 +354,7 @@ class ExecutionTests(unittest.TestCase):
         def bad_source():
             raise i.Error("missing source layer")
             yield
-        with tempfile.TemporaryFile() as lock, patch.object(i.os, "geteuid", return_value=0), patch.object(i, "discover_device", return_value="/dev/sda"), patch.object(i, "read_table", return_value=table()), patch.object(i, "require_commands"), patch.object(i, "refuse_boot_disk"), patch.object(i, "require_idle"), patch.object(i, "open", return_value=lock, create=True), patch.object(i, "inhibit_sleep", return_value=nullcontext()), patch.object(i, "base_kargs", return_value=[]), patch.object(i, "locked_source", bad_source), patch.object(i.Installation, "partition") as partition:
+        with tempfile.TemporaryFile() as lock, patch.object(i, "check_device_compatibility"), patch.object(i.os, "geteuid", return_value=0), patch.object(i, "discover_device", return_value="/dev/sda"), patch.object(i, "read_table", return_value=table()), patch.object(i, "require_commands"), patch.object(i, "refuse_boot_disk"), patch.object(i, "require_idle"), patch.object(i, "open", return_value=lock, create=True), patch.object(i, "inhibit_sleep", return_value=nullcontext()), patch.object(i, "base_kargs", return_value=[]), patch.object(i, "locked_source", bad_source), patch.object(i.Installation, "partition") as partition:
             with self.assertRaisesRegex(i.Error, "missing source layer"):
                 i.execute(args)
         partition.assert_not_called()
@@ -448,7 +448,7 @@ class ExecutionTests(unittest.TestCase):
         info = table(["vendor", "metadata"]).info()
         info.update(device="/dev/sda", table_fingerprint="confirmed")
         gui = i.Gui(None)
-        with patch.object(i, "output", return_value=json.dumps(info)), patch.object(gui, "confirm") as confirm, patch.object(gui, "progress") as progress, patch.object(gui, "dialog", return_value=Mock(returncode=1)):
+        with patch.object(i, "check_device_compatibility"), patch.object(i, "output", return_value=json.dumps(info)), patch.object(gui, "confirm") as confirm, patch.object(gui, "progress") as progress, patch.object(gui, "dialog", return_value=Mock(returncode=1)):
             gui.start()
         self.assertIn("All data in that space will be erased", confirm.call_args.args[0])
         self.assertIn(info["partition_names"], confirm.call_args.args[0])
@@ -520,6 +520,113 @@ except m['Interrupted']: sys.exit(143)
                 if parent.poll() is None:
                     parent.kill()
                     parent.wait()
+
+
+class DeviceProtectionTests(unittest.TestCase):
+    def identity(self, root, model="Unrelated handheld", compatibles=("qcom,kaanapali",)):
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "model").write_bytes(model.encode() + b"\0")
+        (root / "compatible").write_bytes(b"\0".join(item.encode() for item in compatibles) + b"\0")
+
+    def run_entry(self, root, args):
+        stderr = io.StringIO()
+        with patch.object(i, "DEVICE_TREE", root), patch.object(i.os, "geteuid", return_value=0), \
+                patch.dict(os.environ, {"ARMADA_MODEL": "Lenovo Legion Tab Y700 (TB323FU)"}), \
+                patch("sys.stderr", stderr):
+            result = i.main(args)
+        return result, stderr.getvalue()
+
+    def assert_disk_commands_unused(self, discover, read_table, run, output):
+        discover.assert_not_called()
+        read_table.assert_not_called()
+        run.assert_not_called()
+        output.assert_not_called()
+
+    def test_blocked_device_tree_signals_stop_every_real_entry_before_disk_probe(self):
+        cases = [
+            ("Lenovo Legion Y700 Gen 5 (TB323FU)", ("qcom,kaanapali",)),
+            ("Lenovo Legion Tab Y700 (TB323FU)", ("qcom,kaanapali",)),
+            ("Lenovo Legion Tab Y700 5th Gen", ("qcom,kaanapali",)),
+            ("Lenovo Legion Y700 AI Infinite 5G (TB324ZC)", ("qcom,canoe",)),
+            ("Unrelated handheld", ("qcom,kaanapali", "lenovo,baldur")),
+            ("Unrelated handheld", ("qcom,canoe", "lenovo,wuji")),
+            # Conflicting board and model strings still fail closed on either signal.
+            ("Unrelated handheld", ("lenovo,baldur",)),
+            ("Lenovo Legion Tab Y700 (TB323FU)", ("qcom,canoe",)),
+        ]
+        entries = [
+            ["--device", "/dev/fake", "detect", "--json"],
+            ["--device", "/dev/fake", "install", "--userdata-gib", "32", "-y"],
+            ["--device", "/dev/fake", "install", "-y"],
+            ["--device", "/dev/fake", "gui"],
+        ]
+        with tempfile.TemporaryDirectory() as work:
+            root = Path(work) / "device-tree"
+            for index, (model, compatibles) in enumerate(cases):
+                self.identity(root, model, compatibles)
+                for args in entries:
+                    with self.subTest(identity=(model, compatibles), entry=args), \
+                            patch.object(i, "discover_device") as discover, \
+                            patch.object(i, "read_table") as read_table, \
+                            patch.object(i, "run") as run, patch.object(i, "output") as output, \
+                            patch.object(i.Installation, "partition") as partition, \
+                            patch.object(i.Installation, "deploy") as deploy, \
+                            patch.object(i.Gui, "dialog"):
+                        result, error = self.run_entry(root, args)
+                        self.assertEqual(result, 1)
+                        self.assertIn("not supported", error)
+                        self.assert_disk_commands_unused(discover, read_table, run, output)
+                        partition.assert_not_called()
+                        deploy.assert_not_called()
+
+    def test_compatible_is_parsed_as_a_nul_delimited_list(self):
+        with tempfile.TemporaryDirectory() as work:
+            root = Path(work) / "device-tree"
+            self.identity(root, compatibles=("qcom,canoe", "lenovo,wuji", "qcom,sm8850"))
+            # Include a trailing NUL as emitted by the kernel device tree.
+            with patch.object(i, "DEVICE_TREE", root):
+                with self.assertRaisesRegex(i.Error, "not supported"):
+                    i.check_device_compatibility()
+
+    def test_unreadable_or_malformed_identity_fails_closed_before_probe(self):
+        with tempfile.TemporaryDirectory() as work:
+            root = Path(work) / "device-tree"
+            root.mkdir()
+            for missing, compatible_data in (("compatible", None), ("model", b"Unrelated handheld\0"),
+                                             (None, b"qcom,canoe\0\0qcom,sm8850\0")):
+                (root / "model").write_bytes(b"Unrelated handheld\0")
+                if missing == "model":
+                    (root / "model").unlink(missing_ok=True)
+                if compatible_data is None:
+                    (root / "compatible").unlink(missing_ok=True)
+                else:
+                    (root / "compatible").write_bytes(compatible_data)
+                for args in (["detect"], ["install", "--userdata-gib", "32", "-y"], ["install", "-y"]):
+                    with self.subTest(identity=compatible_data, entry=args), \
+                            patch.object(i, "discover_device") as discover, \
+                            patch.object(i, "read_table") as read_table, patch.object(i, "run") as run, \
+                            patch.object(i, "output") as output, \
+                            patch.object(i.Installation, "partition") as partition, \
+                            patch.object(i.Installation, "deploy") as deploy:
+                        result, error = self.run_entry(root, args)
+                        self.assertEqual(result, 1)
+                        self.assertIn("Cannot read device-tree", error)
+                        self.assert_disk_commands_unused(discover, read_table, run, output)
+                        partition.assert_not_called()
+                        deploy.assert_not_called()
+
+    def test_unrelated_handheld_still_reaches_detect(self):
+        with tempfile.TemporaryDirectory() as work:
+            root = Path(work) / "device-tree"
+            self.identity(root)
+            with patch.object(i, "discover_device", return_value="/dev/fake") as discover, \
+                    patch.object(i, "read_table", return_value=table(device="/dev/fake")) as read_table, \
+                    patch.object(i, "table_fingerprint", return_value="fingerprint"), \
+                    patch("sys.stdout", new_callable=io.StringIO):
+                result, error = self.run_entry(root, ["--device", "/dev/fake", "detect", "--json"])
+            self.assertEqual(result, 0, error)
+            discover.assert_called_once_with("/dev/fake")
+            read_table.assert_called_once_with("/dev/fake")
 
 
 if __name__ == "__main__":
