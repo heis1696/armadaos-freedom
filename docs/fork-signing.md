@@ -49,6 +49,13 @@
   不降级为"仅检查 PEM 外观";
 - `policy.json`、`registries.d` 与上述身份、公钥互相一致,上游作用域未被删改。
 
+受保护的 fork、上游和旧上游仓库不允许额外的 tag/digest 策略覆盖项：
+containers/image 使用最具体的作用域，不会继承仓库级要求。附件配置文件采用固定的
+YAML 子集：唯一 `docker:` 根键、两空格仓库键、四空格的
+`use-sigstore-attachments: true/false`；允许空行与整行注释，拒绝重复键、错误层级及
+其他 YAML 表达形式。三个受保护仓库都必须开启附件。这是该受控配置文件的格式约定，
+并非通用 YAML 解析器。
+
 `--allow-missing-key` 只把缺钥与"无法做密码学验证"(无 openssl)降级为警告,
 供本地无钥自检;发布工作流不使用该参数。本地开发构建(`build_files/build.sh`)
 与 PR 构建(pr.yml,不认证、不推送、仅本地 oci-archive)不经过门检,因此无钥
@@ -82,6 +89,8 @@ cosign 按钥验签只绑定密钥与 digest,不校验 ref 中的仓库名(同�
 - `build.yml` 的磁盘发布任务仍带 `github.event.repository.fork == false` 条件,
   而本仓库在 GitHub 上是 fork,因此磁盘发布不会触发。放开该门控需要维护者决策
   (并另行配置 R2 目标),属于发布验收范畴,不在本轮签名闭环内。
+- 独立手动运行 `packages.yml` 仍可发布软件包产物；它不发布或晋级系统镜像。
+  由 `build.yml` 调用时，软件包任务受前置检查约束。
 
 ## 验证边界
 

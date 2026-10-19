@@ -270,6 +270,17 @@ def check_policy(gate: Gate, root: Path, image_repository: str, public_key_path:
         return
     docker = transports["docker"]
 
+    # containers/image selects the most specific scope; requirements from the
+    # repository scope are not inherited by tag/digest overrides. This fork
+    # deliberately keeps one policy per protected repository.
+    for repository in (image_repository, *EXPECTED_UPSTREAM_RULES):
+        for scope in docker:
+            if scope.startswith((repository + ":", repository + "@")):
+                gate.error(
+                    f"{POLICY_JSON}: tag/digest override {scope} shadows protected "
+                    f"repository {repository}; remove the override"
+                )
+
     if policy.get("default") != [{"type": "reject"}]:
         gate.error(f"{POLICY_JSON}: top-level default must stay [{{\"type\": \"reject\"}}]")
 
@@ -339,29 +350,45 @@ def check_registries_d(gate: Gate, root: Path, image_repository: str) -> None:
         gate.error(f"{REGISTRIES_D} is not readable: {exc}")
         return
 
-    # The file only ever holds docker: -> <registry>: -> use-sigstore-attachments:,
-    # so a two-level indent scan keeps this dependency-free.
+    # Validate the deliberately restricted YAML form of this managed file:
+    # one docker mapping, unique repository keys, and one boolean setting per
+    # repository. Reject other YAML forms instead of guessing their meaning.
+    registries = {}
+    seen_docker = False
     current_registry = None
-    found = False
-    for raw_line in lines:
+    for number, raw_line in enumerate(lines, 1):
         line = raw_line.rstrip()
         if not line.strip() or line.strip().startswith("#"):
             continue
-        indent = len(line) - len(line.lstrip(" "))
-        text = line.strip()
-        if indent == 2 and text.endswith(":"):
-            current_registry = text[:-1]
-        elif (
-            indent >= 4
-            and current_registry == image_repository
-            and text == "use-sigstore-attachments: true"
-        ):
-            found = True
-    if not found:
-        gate.error(
-            f"{REGISTRIES_D}: {image_repository} must set use-sigstore-attachments: true so "
-            "cosign signatures are fetched alongside the image"
-        )
+        if line == "docker:" and not seen_docker:
+            seen_docker = True
+            continue
+        repository_match = re.fullmatch(r"  ([a-z0-9][a-z0-9./:_-]*):", line)
+        setting_match = re.fullmatch(r"    use-sigstore-attachments: (true|false)", line)
+        if seen_docker and repository_match:
+            current_registry = repository_match.group(1)
+            if current_registry in registries:
+                gate.error(f"{REGISTRIES_D}:{number}: duplicate repository {current_registry}")
+                return
+            registries[current_registry] = None
+        elif seen_docker and current_registry is not None and setting_match:
+            if registries[current_registry] is not None:
+                gate.error(f"{REGISTRIES_D}:{number}: duplicate use-sigstore-attachments")
+                return
+            registries[current_registry] = setting_match.group(1) == "true"
+        else:
+            gate.error(
+                f"{REGISTRIES_D}:{number}: expected docker -> repository -> "
+                "use-sigstore-attachments with 0/2/4-space indentation; "
+                "duplicate keys and other YAML forms are not supported"
+            )
+            return
+    for repository in (image_repository, *EXPECTED_UPSTREAM_RULES):
+        if registries.get(repository) is not True:
+            gate.error(
+                f"{REGISTRIES_D}: {repository} must set use-sigstore-attachments: true "
+                "under the docker mapping"
+            )
 
 
 def main() -> int:

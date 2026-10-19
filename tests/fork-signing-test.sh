@@ -314,6 +314,28 @@ with tempfile.TemporaryDirectory(prefix="fork-signing-keys-") as keydir:
         proc = run_gate(inconsistent)
         check("fork scope accepting anything is rejected", proc.returncode != 0)
 
+        # More-specific rules replace (rather than inherit) repository rules.
+        # Keep the valid repository policy and try to bypass it at tag/digest.
+        for protected in (REPO, UPSTREAM_REPO, "ghcr.io/virtudude/armada"):
+            for suffix in (":stable", "@" + FIXTURE_DIGEST):
+                overridden = make_sandbox(key_bytes=valid_key)
+                def override_scope(data, scope=protected + suffix):
+                    data["transports"]["docker"][scope] = [{"type": "insecureAcceptAnything"}]
+                edit_json(overridden, POLICY_REL, override_scope)
+                proc = run_gate(overridden)
+                check(
+                    f"protected scope override is rejected: {protected}{suffix}",
+                    proc.returncode != 0 and "tag/digest override" in proc.stderr,
+                    proc.stderr.strip(),
+                )
+
+        unrelated = make_sandbox(key_bytes=valid_key)
+        edit_json(unrelated, POLICY_REL, lambda data: data["transports"]["docker"].update({
+            REPO + "-other:stable": [{"type": "insecureAcceptAnything"}]
+        }))
+        proc = run_gate(unrelated)
+        check("unrelated repository scope does not shadow the fork", proc.returncode == 0, proc.stderr.strip())
+
         def trust_upstream_key_for_fork(data):
             data["transports"]["docker"][REPO] = [dict(FORK_SCOPE_RULE, keyPaths=[UPSTREAM_ARMADA_KEY])]
 
@@ -399,6 +421,29 @@ with tempfile.TemporaryDirectory(prefix="fork-signing-keys-") as keydir:
             "registry without fork sigstore attachments is rejected",
             proc.returncode != 0 and "use-sigstore-attachments" in proc.stderr,
         )
+
+        attachments = (ROOT / REGISTRIES_REL).read_text()
+        fork_block = f"  {REPO}:\n    use-sigstore-attachments: true\n"
+        invalid_attachments = (
+            ("wrong top-level transport", attachments.replace("docker:", "other:", 1)),
+            ("duplicate boolean setting", attachments.replace(fork_block,
+                fork_block + "    use-sigstore-attachments: false\n")),
+            ("duplicate repository key", attachments + fork_block.replace("true", "false")),
+            ("wrong indentation", attachments.replace(fork_block,
+                f"    {REPO}:\n      use-sigstore-attachments: true\n")),
+            ("disabled attachments", attachments.replace(fork_block, fork_block.replace("true", "false"))),
+            ("quoted boolean", attachments.replace(fork_block, fork_block.replace("true", '"true"'))),
+        )
+        for reason, content in invalid_attachments:
+            invalid = make_sandbox(key_bytes=valid_key)
+            (invalid / REGISTRIES_REL).write_text(content)
+            proc = run_gate(invalid)
+            check(f"attachment config rejects {reason}", proc.returncode != 0, proc.stderr.strip())
+
+        commented = make_sandbox(key_bytes=valid_key)
+        (commented / REGISTRIES_REL).write_text("# Managed signature attachments\n\n" + attachments)
+        proc = run_gate(commented)
+        check("comments and blank lines preserve attachment config", proc.returncode == 0, proc.stderr.strip())
 
         if openssl:
             stripped = make_sandbox(key_bytes=valid_key)
