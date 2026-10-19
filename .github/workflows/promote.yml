@@ -76,8 +76,14 @@ jobs:
           # Pin to the digest so verify and the retag below act on the same image
           # even if a concurrent build re-points the source tag in between.
           DIGEST=$(skopeo inspect --format '{{.Digest}}' "docker://${REPO}:${{ inputs.source }}")
-          # Fail closed: never promote an unsigned or foreign-keyed build into beta/stable.
-          cosign verify --key "${RELEASE_PUBKEY}" "${REPO}@${DIGEST}"
+          # Fail closed: never promote an unsigned or foreign-keyed build into
+          # beta/stable. cosign key verification binds only the key and the
+          # digest, so verify-signature-result.py additionally checks the
+          # signed repository identity and digest; an empty or
+          # foreign-identity result fails before anything is copied.
+          cosign verify --key "${RELEASE_PUBKEY}" "${REPO}@${DIGEST}" |
+            python3 .github/scripts/verify-signature-result.py \
+              --identity "${REPO}" --digest "${DIGEST}"
           echo "digest=${DIGEST}" >> "${GITHUB_OUTPUT}"
 
       - name: Publish release tags
