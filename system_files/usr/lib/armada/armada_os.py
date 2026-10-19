@@ -6,22 +6,32 @@ import release_config
 UPDATE = "/usr/libexec/armada/armada-update"
 SELECT = "/usr/libexec/armada/armada-select-branch"
 CHANNELS = ("stable", "beta", "preview")
+REPOSITORY_CHANNELS = ("stable", "beta", "testing")
 REPOSITORIES = ("ghcr.io/armada-os/armada", "ghcr.io/virtudude/armada")
 
 
-def supported_channels(repository):
-    """Steam-visible channels for the exact update repository."""
+def repository_channels(repository):
+    """Raw channel tags for the exact update repository."""
     if repository in REPOSITORIES:
-        return list(CHANNELS)
+        return list(REPOSITORY_CHANNELS)
     try:
         config = release_config.load_release_config()
     except release_config.ReleaseConfigError:
         return []
     if repository != config.image_repository:
         return []
+    return list(config.channels)
+
+
+def visible_channel(channel):
+    return "preview" if channel == "testing" else channel
+
+
+def supported_channels(repository):
+    """Steam-visible channels for the exact update repository."""
     channels = []
-    for channel in config.channels:
-        visible = "preview" if channel == "testing" else channel
+    for channel in repository_channels(repository):
+        visible = visible_channel(channel)
         if visible in CHANNELS and visible not in channels:
             channels.append(visible)
     return channels
@@ -56,12 +66,16 @@ def snapshot():
     except (subprocess.SubprocessError, RuntimeError):
         target = []
     repository, channel = target if len(target) == 2 else ("", "")
+    # A pinned development tag wins in armada_desired_channel, so a channel
+    # switch would not change the update target.  Only offer channels that the
+    # runtime would actually honor; the pinned tag stays fixed.
+    switchable = channel in repository_channels(repository)
     if channel == "testing":
         channel = "preview"
     state = {"booted": booted, "rollback": deployment(status.get("rollback")),
              "staged": deployment(status.get("staged")), "rollback_queued": bool(status.get("rollbackQueued")),
              "channel": channel, "repository": repository,
-             "channels": supported_channels(repository)}
+             "channels": supported_channels(repository) if switchable else []}
     return state
 
 

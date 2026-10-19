@@ -7,8 +7,10 @@ in the repository).  The file is never sourced or evaluated by a shell.
 
 ``update-lib`` invokes this module with ``python3 release_config.py --config
 PATH`` and consumes the single output line ``repository<TAB>channel ...``.
-Tests may import :func:`load_release_config` directly and point it at a
-temporary copy of the file.
+It also invokes ``--reference REF`` to parse a booted container image
+reference down to its repository; :func:`parse_image_reference` is the same
+parser as a library function.  Tests may import :func:`load_release_config`
+directly and point it at a temporary copy of the file.
 """
 
 from __future__ import annotations
@@ -38,8 +40,37 @@ _HOST_LABEL = r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?"
 _REGISTRY = rf"(?:{_HOST_LABEL}\.)*{_HOST_LABEL}(?::[0-9]{{1,5}})?"
 _COMPONENT = r"[a-z0-9]+(?:(?:[._]|__|[-]+)[a-z0-9]+)*"
 _REPOSITORY_RE = re.compile(rf"^{_REGISTRY}/{_COMPONENT}(?:/{_COMPONENT})*$")
+_TAG_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$")
+# bootc/containers signatures are sha256 based; a digest is never guessed.
+_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _CHANNEL_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 _KEY_PATH_RE = re.compile(r"^(?:/[A-Za-z0-9._-]+)+$")
+
+# The complete container-image-reference prefixes written by rpm-ostree/bootc
+# (and the plain docker:// transport).  A reference must start with one of
+# these exactly; shorter/garbage prefixes hide a nested transport.
+SUPPORTED_TRANSPORTS = (
+    "ostree-image-signed:docker://",
+    "ostree-unverified-image:docker://",
+    "ostree-unverified-registry:",
+    "docker://",
+)
+# Local storage/importer transports are never network update sources, even
+# when they follow an accepted prefix.
+LOCAL_TRANSPORTS = (
+    "atomic:",
+    "containers-storage:",
+    "dir:",
+    "docker-archive:",
+    "docker-daemon:",
+    "docker:",
+    "oci:",
+    "oci-archive:",
+    "ostree:",
+    "ostree-remote-registry:",
+    "sif:",
+    "tarball:",
+)
 
 
 class ReleaseConfigError(ValueError):
@@ -52,6 +83,15 @@ class ReleaseConfig:
     image_repository: str
     channels: tuple[str, ...]
     public_key_path: str
+
+
+@dataclass(frozen=True)
+class ImageReference:
+    """A validated ``name[:tag][@sha256:digest]`` image reference."""
+
+    repository: str
+    tag: str | None
+    digest: str | None
 
 
 def _object_without_duplicates(pairs):
@@ -150,6 +190,72 @@ def load_release_config(path=None) -> ReleaseConfig:
     )
 
 
+def parse_image_reference(reference) -> ImageReference:
+    """Validate one booted container-image-reference.
+
+    The reference must use exactly one supported, complete transport prefix and
+    then be a well-formed OCI reference: ``registry/repository[:tag][@digest]``.
+    Nested or local transports and malformed names, tags or digests are
+    rejected instead of being stripped down to a guessable repository.  This is
+    deliberately fail-closed: callers must never fall back to another
+    repository.
+
+    Raises :class:`ReleaseConfigError` for any unsupported or malformed value.
+    """
+
+    if not isinstance(reference, str) or not reference:
+        raise ReleaseConfigError("image reference must be a non-empty string")
+
+    remainder = None
+    for transport in SUPPORTED_TRANSPORTS:
+        if reference.startswith(transport):
+            remainder = reference[len(transport):]
+            break
+    if remainder is None:
+        raise ReleaseConfigError(
+            f"image reference has no supported transport: {reference!r}"
+        )
+    if not remainder:
+        raise ReleaseConfigError("image reference is empty after its transport")
+    # A second transport layer (docker://, oci://, ...) is never part of an
+    # OCI name, and whitespace/control characters cannot appear in one.
+    if "://" in remainder:
+        raise ReleaseConfigError(f"image reference nests a transport: {reference!r}")
+    if any(
+        character.isspace() or ord(character) < 0x20 or ord(character) == 0x7F
+        for character in remainder
+    ):
+        raise ReleaseConfigError(
+            f"image reference contains whitespace or control characters: {reference!r}"
+        )
+    for transport in LOCAL_TRANSPORTS:
+        if remainder.startswith(transport):
+            raise ReleaseConfigError(
+                f"local image transport is not an update source: {reference!r}"
+            )
+
+    name = remainder
+    digest = None
+    tag = None
+    if "@" in name:
+        if name.count("@") != 1:
+            raise ReleaseConfigError(f"image reference has an invalid digest: {reference!r}")
+        name, _, digest = name.partition("@")
+        if not _DIGEST_RE.fullmatch(digest):
+            raise ReleaseConfigError(f"image reference has an invalid digest: {reference!r}")
+    last = name.rsplit("/", 1)[-1]
+    if ":" in last:
+        name, _, tag = name.rpartition(":")
+        if not _TAG_RE.fullmatch(tag):
+            raise ReleaseConfigError(f"image reference has an invalid tag: {reference!r}")
+    if not _REPOSITORY_RE.fullmatch(name):
+        raise ReleaseConfigError(
+            f"image reference has an invalid repository: {reference!r}"
+        )
+
+    return ImageReference(repository=name, tag=tag, digest=digest)
+
+
 def shell_line(config: ReleaseConfig) -> str:
     """Return the repository and channels as one tab-separated line."""
 
@@ -161,7 +267,21 @@ def main(argv=None) -> int:
         description="Validate the Armada fork release metadata"
     )
     parser.add_argument("--config", default=DEFAULT_CONFIG_PATH, metavar="PATH")
+    parser.add_argument(
+        "--reference",
+        metavar="REF",
+        help=argparse.SUPPRESS,
+    )
     arguments = parser.parse_args(argv)
+
+    if arguments.reference is not None:
+        try:
+            reference = parse_image_reference(arguments.reference)
+        except ReleaseConfigError as error:
+            print(f"armada-release-config: {error}", file=sys.stderr)
+            return 1
+        print(reference.repository)
+        return 0
 
     try:
         config = load_release_config(arguments.config)

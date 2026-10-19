@@ -175,6 +175,33 @@ armada_bootc_with_progress() { echo "$*" >> "$BOOTC_CALLS"; echo '70%'; }
         self.assertEqual(accepted.returncode, 0, accepted.stderr)
         self.assertEqual((self.base / "channel").read_text(), "beta\n")
 
+    def test_pinned_development_tag_offers_no_channel_selection(self):
+        config = json.loads(self.release_config.read_text())
+        self.env["BOOTED_REF"] = (
+            "ostree-image-signed:docker://" + config["image_repository"] + ":feature-a"
+        )
+        listed = subprocess.run(["bash", str(self.selector), "-l"], env=self.env,
+                                capture_output=True, text=True)
+        self.assertEqual(listed.returncode, 0, listed.stderr)
+        self.assertEqual(listed.stdout, "")
+        current = subprocess.run(["bash", str(self.selector), "-c"], env=self.env,
+                                 capture_output=True, text=True)
+        self.assertEqual(current.returncode, 0, current.stderr)
+        for token in ("rel", "beta", "main"):
+            denied = subprocess.run(["bash", str(self.selector), token], env=self.env,
+                                    capture_output=True, text=True)
+            self.assertNotEqual(denied.returncode, 0)
+        self.assertFalse((self.base / "channel").exists())
+
+    def test_wrapped_transport_ref_is_not_a_trusted_source(self):
+        self.env["BOOTED_REF"] = (
+            "containers-storage:docker://ghcr.io/heis1696/armadaos-freedom:stable"
+        )
+        listed = subprocess.run(["bash", str(self.selector), "-l"], env=self.env,
+                                capture_output=True, text=True)
+        self.assertNotEqual(listed.returncode, 0)
+        self.assertIn("Could not determine the update repository", listed.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

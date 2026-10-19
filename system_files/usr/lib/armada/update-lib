@@ -92,27 +92,17 @@ armada_registry_from_ref() {
     return 0
 }
 
-# Parse a container ref down to a registry/repository, rejecting local and
-# unreadable transports instead of guessing a fallback repository.
+# Parse a container ref down to a registry/repository.  release_config.py owns
+# the shared grammar: exactly one complete supported transport prefix followed
+# by a well-formed OCI name/tag/digest.  Nested or local transports and
+# malformed values are rejected instead of being stripped to a guess; callers
+# must fail closed rather than fall back to another repository.
 armada_repository_from_ref() {
-    local r
-    case "$1" in
-        ostree-unverified-registry:*) r="${1#ostree-unverified-registry:}" ;;
-        *docker://*) r="${1##*docker://}" ;;
-        *) return 1 ;;
-    esac
-    r="${r#docker://}"
-    # Explicit non-registry transports (notably containers-storage) are never
-    # valid network update sources.
-    case "$r" in
-        containers-storage:*|oci:*|oci-archive:*|dir:*|docker-archive:*|docker-daemon:*|ostree:*|ostree-remote-registry:*)
-            return 1
-            ;;
-    esac
-    r="${r%%@*}"
-    [[ "${r##*/}" == *:* ]] && r="${r%:*}"
-    [[ -n "$r" && "$r" == */* && "$r" != *[[:space:]]* ]] || return 1
-    echo "$r"
+    local repository
+    repository="$(python3 "$ARMADA_RELEASE_HELPER" --reference "${1-}" 2>/dev/null)" \
+        || return 1
+    [[ -n "$repository" ]] || return 1
+    printf '%s\n' "$repository"
 }
 
 armada_steam_channels_apply() {
