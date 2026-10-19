@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "image_repository": "ghcr.io/heis1696/armadaos-freedom",
+  "channels": ["stable", "beta", "testing"],
+  "public_key_path": "/etc/pki/containers/freedom.pub"
+}
