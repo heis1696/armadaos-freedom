@@ -531,7 +531,8 @@ class DeviceProtectionTests(unittest.TestCase):
     def run_entry(self, root, args):
         stderr = io.StringIO()
         with patch.object(i, "DEVICE_TREE", root), patch.object(i.os, "geteuid", return_value=0), \
-                patch.dict(os.environ, {"ARMADA_MODEL": "Lenovo Legion Tab Y700 (TB323FU)"}), \
+                patch.dict(os.environ, {"ARMADA_MODEL": "Unrelated handheld",
+                                        "ARMADA_INTERNAL_DEVICE": "/dev/fake"}), \
                 patch("sys.stderr", stderr):
             result = i.main(args)
         return result, stderr.getvalue()
@@ -548,6 +549,10 @@ class DeviceProtectionTests(unittest.TestCase):
             ("Lenovo Legion Tab Y700 (TB323FU)", ("qcom,kaanapali",)),
             ("Lenovo Legion Tab Y700 5th Gen", ("qcom,kaanapali",)),
             ("Lenovo Legion Y700 AI Infinite 5G (TB324ZC)", ("qcom,canoe",)),
+            ("TB323FU", ("qcom,canoe",)),
+            ("Lenovo TB323FU", ("qcom,canoe",)),
+            ("TB324ZC", ("qcom,canoe",)),
+            ("Lenovo TB324ZC", ("qcom,canoe",)),
             ("Unrelated handheld", ("qcom,kaanapali", "lenovo,baldur")),
             ("Unrelated handheld", ("qcom,canoe", "lenovo,wuji")),
             # Conflicting board and model strings still fail closed on either signal.
@@ -555,7 +560,9 @@ class DeviceProtectionTests(unittest.TestCase):
             ("Lenovo Legion Tab Y700 (TB323FU)", ("qcom,canoe",)),
         ]
         entries = [
+            ["detect", "--json"],
             ["--device", "/dev/fake", "detect", "--json"],
+            ["install", "-y"],
             ["--device", "/dev/fake", "install", "--userdata-gib", "32", "-y"],
             ["--device", "/dev/fake", "install", "-y"],
             ["--device", "/dev/fake", "gui"],
@@ -627,6 +634,22 @@ class DeviceProtectionTests(unittest.TestCase):
             self.assertEqual(result, 0, error)
             discover.assert_called_once_with("/dev/fake")
             read_table.assert_called_once_with("/dev/fake")
+
+    def test_similar_model_identifiers_do_not_match(self):
+        cases = ["TB323FUX", "TB323FU1", "TB324ZC2", "XTB323FU", "TB324ZCX"]
+        with tempfile.TemporaryDirectory() as work:
+            root = Path(work) / "device-tree"
+            for model in cases:
+                self.identity(root, model, ("qcom,canoe",))
+                with self.subTest(model=model), \
+                        patch.object(i, "discover_device", return_value="/dev/fake") as discover, \
+                        patch.object(i, "read_table", return_value=table(device="/dev/fake")) as read_table, \
+                        patch.object(i, "table_fingerprint", return_value="fingerprint"), \
+                        patch("sys.stdout", new_callable=io.StringIO):
+                    result, error = self.run_entry(root, ["--device", "/dev/fake", "detect", "--json"])
+                self.assertEqual(result, 0, error)
+                discover.assert_called_once_with("/dev/fake")
+                read_table.assert_called_once_with("/dev/fake")
 
 
 if __name__ == "__main__":

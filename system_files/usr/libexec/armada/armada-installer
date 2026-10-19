@@ -33,11 +33,9 @@ SELF = "/usr/libexec/armada/armada-installer"
 BOOTIMG = "/usr/libexec/armada/armada-bootimg-update"
 DEVICE_TREE = Path("/sys/firmware/devicetree/base")
 UNSUPPORTED_MODELS = frozenset({
-    "Lenovo Legion Y700 Gen 5 (TB323FU)",
-    "Lenovo Legion Tab Y700 (TB323FU)",
     "Lenovo Legion Tab Y700 5th Gen",
-    "Lenovo Legion Y700 AI Infinite 5G (TB324ZC)",
 })
+UNSUPPORTED_MODEL_IDS = re.compile(r"(?<![A-Z0-9])(?:TB323FU|TB324ZC)(?![A-Z0-9])", re.IGNORECASE)
 UNSUPPORTED_COMPATIBLES = frozenset({"lenovo,baldur", "lenovo,wuji"})
 RECOVERY = ("To retry from SD, select SD as the boot source in ABL and re-run the installer. "
             "To abandon the internal installation, select UNINSTALL CFW in ABL.")
@@ -74,7 +72,8 @@ def check_device_compatibility():
     except (OSError, UnicodeError, ValueError) as error:
         raise Error(f"Cannot read device-tree model and compatible; refusing installation: {error}") from error
 
-    if model in UNSUPPORTED_MODELS or compatibles & UNSUPPORTED_COMPATIBLES:
+    if (model in UNSUPPORTED_MODELS or UNSUPPORTED_MODEL_IDS.search(model)
+            or compatibles & UNSUPPORTED_COMPATIBLES):
         raise Error(f"{model} is not supported by the Armada installer")
 
 
