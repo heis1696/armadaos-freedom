@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -69,6 +70,31 @@ class OperationTests(unittest.TestCase):
         self.assertEqual(state["staged"]["version"], "queued")
         self.assertEqual(state["channels"], ["stable", "beta", "preview"])
         self.assertEqual(state["channel"], "preview")
+        self.assertEqual(self.command.call_count, 2)
+
+    def test_fork_channels_come_from_release_metadata(self):
+        repository = "ghcr.io/heis1696/armadaos-freedom"
+
+        def entry(version, checksum, image):
+            return {"image": {"version": version, "image": {"image": image}},
+                    "ostree": {"checksum": checksum, "deploySerial": 0, "stateroot": "default"}}
+
+        raw = {"status": {"booted": entry("current", "a" * 64, f"{repository}:stable"),
+                          "rollback": entry("previous", "b" * 64, f"{repository}:beta"),
+                          "staged": None, "rollbackQueued": False}}
+        self.command.side_effect = [json.dumps(raw), f"{repository} testing\n"]
+        with tempfile.TemporaryDirectory() as directory:
+            config = json.loads(
+                (ROOT / "system_files/usr/share/armada/release.json").read_text()
+            )
+            config["image_repository"] = repository
+            path = Path(directory) / "release.json"
+            path.write_text(json.dumps(config))
+            with patch.object(maintenance.release_config, "DEFAULT_CONFIG_PATH", str(path)):
+                state = REAL_SNAPSHOT()
+        self.assertEqual(state["repository"], repository)
+        self.assertEqual(state["channel"], "preview")
+        self.assertEqual(state["channels"], ["stable", "beta", "preview"])
         self.assertEqual(self.command.call_count, 2)
 
     def test_no_previous_version_refuses_rollback(self):

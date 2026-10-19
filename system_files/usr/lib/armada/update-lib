@@ -5,6 +5,13 @@ ARMADA_CANONICAL_REGISTRY="ghcr.io/armada-os/armada"
 ARMADA_LEGACY_REGISTRY="ghcr.io/virtudude/armada"
 ARMADA_CHANNEL_STATE="/var/lib/armada/update-channel"
 ARMADA_CHANNELS="stable beta testing"
+# Fork identity metadata.  These are plain assignments, not environment
+# fallbacks: production code never lets a caller replace the trusted
+# repository or key path through the environment.  Tests may reassign them
+# after sourcing this file or call release_config.py directly.
+ARMADA_LIB_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+ARMADA_RELEASE_CONFIG="/usr/share/armada/release.json"
+ARMADA_RELEASE_HELPER="${ARMADA_LIB_DIR}/release_config.py"
 ARMADA_OSTREE_REPO="/ostree/repo"
 ARMADA_UPDATE_RESERVE_GIB=2
 ARMADA_UPDATE_RESERVE_SIZE="${ARMADA_UPDATE_RESERVE_GIB}GB"
@@ -38,21 +45,55 @@ armada_tag_from_ref() {
     [[ "$r" == *:* ]] && echo "${r##*:}" || echo ""
 }
 
-# Exact repository matches prevent lookalike names from being trusted.
-armada_registry_from_ref() {
-    local r="$1"
-    case "$r" in
-        ostree-unverified-registry:*) r="${r#ostree-unverified-registry:}" ;;
-    esac
-    r="${r##*://}"
-    r="${r%%@*}"
-    [[ "${r##*/}" == *:* ]] && r="${r%:*}"
-    case "$r" in
-        "$ARMADA_CANONICAL_REGISTRY"|"$ARMADA_LEGACY_REGISTRY") echo "$r" ;;
-    esac
+# Load the trusted fork identity as data.  The helper rejects missing files,
+# malformed JSON, unknown schema fields and invalid repositories/channels.  A
+# failure is deliberate: callers must not fall back to an upstream repository.
+armada_load_release_config() {
+    local output
+    ARMADA_FORK_REPOSITORY=""
+    ARMADA_FORK_CHANNELS=""
+    output="$(python3 "$ARMADA_RELEASE_HELPER" --config "$ARMADA_RELEASE_CONFIG")" \
+        || return 1
+    IFS=$'\t' read -r ARMADA_FORK_REPOSITORY ARMADA_FORK_CHANNELS <<<"$output"
+    [[ -n "$ARMADA_FORK_REPOSITORY" && -n "$ARMADA_FORK_CHANNELS" ]]
 }
 
-# Non-registry transports cannot be checked for network updates.
+# Channels that may be selected for a trusted repository.  Upstream keeps its
+# historical stable/beta/testing behaviour; the fork uses the validated JSON
+# channel list; anything else is not channel-managed.
+armada_repository_channels() {
+    local repository="$1"
+    case "$repository" in
+        "$ARMADA_CANONICAL_REGISTRY"|"$ARMADA_LEGACY_REGISTRY")
+            printf '%s\n' "$ARMADA_CHANNELS"
+            return 0
+            ;;
+    esac
+    armada_load_release_config || return 1
+    [[ "$repository" == "$ARMADA_FORK_REPOSITORY" ]] || return 1
+    printf '%s\n' "$ARMADA_FORK_CHANNELS"
+}
+
+# Exact repository matches prevent lookalike names from being trusted.
+armada_registry_from_ref() {
+    local r=""
+    r="$(armada_repository_from_ref "$1" 2>/dev/null || true)"
+    [[ -n "$r" ]] || return 0
+    case "$r" in
+        "$ARMADA_CANONICAL_REGISTRY"|"$ARMADA_LEGACY_REGISTRY")
+            echo "$r"
+            return 0
+            ;;
+    esac
+    if armada_load_release_config 2>/dev/null && \
+        [[ "$r" == "$ARMADA_FORK_REPOSITORY" ]]; then
+        echo "$r"
+    fi
+    return 0
+}
+
+# Parse a container ref down to a registry/repository, rejecting local and
+# unreadable transports instead of guessing a fallback repository.
 armada_repository_from_ref() {
     local r
     case "$1" in
@@ -60,7 +101,14 @@ armada_repository_from_ref() {
         *docker://*) r="${1##*docker://}" ;;
         *) return 1 ;;
     esac
-    r="${r##*docker://}"
+    r="${r#docker://}"
+    # Explicit non-registry transports (notably containers-storage) are never
+    # valid network update sources.
+    case "$r" in
+        containers-storage:*|oci:*|oci-archive:*|dir:*|docker-archive:*|docker-daemon:*|ostree:*|ostree-remote-registry:*)
+            return 1
+            ;;
+    esac
     r="${r%%@*}"
     [[ "${r##*/}" == *:* ]] && r="${r%:*}"
     [[ -n "$r" && "$r" == */* && "$r" != *[[:space:]]* ]] || return 1
@@ -68,13 +116,10 @@ armada_repository_from_ref() {
 }
 
 armada_steam_channels_apply() {
-    local channel
-    case "$1" in
-        "$ARMADA_CANONICAL_REGISTRY"|"$ARMADA_LEGACY_REGISTRY") ;;
-        *) return 1 ;;
-    esac
-    for channel in ${ARMADA_CHANNELS}; do
-        [[ "$2" == "$channel" ]] && return 0
+    local repository="$1" wanted="$2" allowed channel
+    allowed="$(armada_repository_channels "$repository" 2>/dev/null)" || return 1
+    for channel in ${allowed}; do
+        [[ "$wanted" == "$channel" ]] && return 0
     done
     return 1
 }
@@ -113,7 +158,10 @@ print(" ".join(v or "-" for v in out))
 armada_remote_info() {
     local registry="${2:-}"
     [[ -n "$registry" ]] || registry="$(armada_booted_registry)"
-    [[ -n "$registry" ]] || registry="$ARMADA_CANONICAL_REGISTRY"
+    [[ -n "$registry" ]] || {
+        armada_update_log "could not determine the update repository"
+        return 1
+    }
     skopeo inspect "docker://${registry}:$1" 2>/dev/null | \
         python3 -c '
 import json
@@ -241,38 +289,84 @@ armada_update_fits() {
     return 1
 }
 
-# Channel the user selected, validated to a known channel; else $1 (a caller-
-# supplied booted channel, to avoid re-querying) or the booted channel.
+# Channel for a trusted repository, validated against that repository's
+# channel list.  Usage: armada_desired_channel [booted-tag] [repository].
+# With no arguments the booted tag and repository are queried.  An explicit
+# non-channel tag is preserved.
 armada_desired_channel() {
-    local c="" ch
+    local booted="${1-}" repository="${2:-}" c="" ch allowed is_channel=0
+
+    if [[ $# -eq 0 ]]; then
+        booted="$(armada_booted_channel)"
+    fi
+
+    if [[ -z "$repository" ]]; then
+        repository="$(armada_booted_registry)"
+    fi
+    if [[ -n "$repository" ]]; then
+        allowed="$(armada_repository_channels "$repository")" || return 1
+    else
+        # Historical helper callers without a parsed repository still validate
+        # against the upstream channel set; update targets never take this path.
+        allowed="$ARMADA_CHANNELS"
+    fi
+
+    # A pinned development tag wins over any stored Steam channel.
+    if [[ -n "$booted" ]]; then
+        for ch in $allowed; do
+            [[ "$booted" == "$ch" ]] && { is_channel=1; break; }
+        done
+        if (( is_channel == 0 )); then
+            printf '%s\n' "$booted"
+            return 0
+        fi
+    fi
+
     [[ -r "$ARMADA_CHANNEL_STATE" ]] && read -r c < "$ARMADA_CHANNEL_STATE" 2>/dev/null
     # Exact-match a known channel (a substring/glob test would accept a corrupt
     # multi-word value and feed it to bootc as a tag).
-    for ch in ${ARMADA_CHANNELS}; do
-        [[ "$c" == "$ch" ]] && { echo "$c"; return; }
+    for ch in $allowed; do
+        [[ "$c" == "$ch" ]] && { printf '%s\n' "$c"; return 0; }
     done
-    if [[ -n "${1:-}" ]]; then echo "$1"; else armada_booted_channel; fi
+
+    [[ -n "$booted" ]] && { printf '%s\n' "$booted"; return 0; }
+    return 1
 }
 
 armada_update_target() {
     local ref="$1" booted repository desired
+
+    # Fail closed: without validated release metadata no target is trusted, and
+    # no fallback to an upstream repository is attempted.
+    armada_load_release_config || {
+        armada_update_log "could not load release metadata from ${ARMADA_RELEASE_CONFIG}"
+        return 1
+    }
+
+    repository="$(armada_repository_from_ref "$ref")" || {
+        armada_update_log "could not determine a registry update source"
+        return 1
+    }
     booted="$(armada_tag_from_ref "$ref")"
-    if repository="$(armada_repository_from_ref "$ref")"; then
-        if [[ -z "$booted" ]]; then
-            case "$repository" in
-                "$ARMADA_CANONICAL_REGISTRY"|"$ARMADA_LEGACY_REGISTRY") ;;
-                *) return 1 ;;
-            esac
-        fi
-        if [[ -n "$booted" ]] && ! armada_steam_channels_apply "$repository" "$booted"; then
+
+    case "$repository" in
+        "$ARMADA_FORK_REPOSITORY"|"$ARMADA_CANONICAL_REGISTRY"|"$ARMADA_LEGACY_REGISTRY")
+            desired="$(armada_desired_channel "$booted" "$repository")" || {
+                armada_update_log "could not determine an update channel for ${repository}"
+                return 1
+            }
+            ;;
+        *)
+            # External images keep an explicit tag in their own repository.  A
+            # digest-only external ref has no trusted repository/channel pair.
+            [[ -n "$booted" ]] || {
+                armada_update_log "external update source has no tag"
+                return 1
+            }
             desired="$booted"
-        else
-            desired="$(armada_desired_channel "$booted")"
-        fi
-    else
-        repository="$ARMADA_CANONICAL_REGISTRY"
-        desired="$(armada_desired_channel "$booted")"
-    fi
+            ;;
+    esac
+
     [[ -n "$repository" && -n "$desired" && \
         "$repository" != *[[:space:]]* && "$desired" != *[[:space:]]* ]] || return 1
     printf '%s %s\n' "$repository" "$desired"

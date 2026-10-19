@@ -1,10 +1,30 @@
 import json
 import subprocess
 
+import release_config
+
 UPDATE = "/usr/libexec/armada/armada-update"
 SELECT = "/usr/libexec/armada/armada-select-branch"
 CHANNELS = ("stable", "beta", "preview")
 REPOSITORIES = ("ghcr.io/armada-os/armada", "ghcr.io/virtudude/armada")
+
+
+def supported_channels(repository):
+    """Steam-visible channels for the exact update repository."""
+    if repository in REPOSITORIES:
+        return list(CHANNELS)
+    try:
+        config = release_config.load_release_config()
+    except release_config.ReleaseConfigError:
+        return []
+    if repository != config.image_repository:
+        return []
+    channels = []
+    for channel in config.channels:
+        visible = "preview" if channel == "testing" else channel
+        if visible in CHANNELS and visible not in channels:
+            channels.append(visible)
+    return channels
 
 
 def command(arguments, timeout=15):
@@ -41,7 +61,7 @@ def snapshot():
     state = {"booted": booted, "rollback": deployment(status.get("rollback")),
              "staged": deployment(status.get("staged")), "rollback_queued": bool(status.get("rollbackQueued")),
              "channel": channel, "repository": repository,
-             "channels": list(CHANNELS) if repository in REPOSITORIES and channel in CHANNELS else []}
+             "channels": supported_channels(repository)}
     return state
 
 

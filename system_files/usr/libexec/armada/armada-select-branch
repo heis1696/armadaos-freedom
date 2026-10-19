@@ -4,15 +4,37 @@
 set -uo pipefail
 source /usr/lib/armada/update-lib
 
+fail() {
+    echo "steamos-select-branch: $1" >&2
+    exit 1
+}
+
+repository="$(armada_booted_registry)"
+
 case "${1:-}" in
     -l)
-        for ch in ${ARMADA_CHANNELS}; do armada_channel_to_token "$ch"; done
+        [[ -n "$repository" ]] || fail "Could not determine the update repository"
+        channels="$(armada_repository_channels "$repository")" \
+            || fail "Could not load the update channels"
+        for ch in $channels; do armada_channel_to_token "$ch"; done
         ;;
     -c)
-        armada_channel_to_token "$(armada_desired_channel)"
+        if [[ -n "$repository" ]]; then
+            channel="$(armada_desired_channel "$(armada_booted_channel)" "$repository")" \
+                || fail "Could not determine the current update channel"
+        else
+            # External/untrusted images have no selectable channels; keep the
+            # historical display behaviour rather than failing the UI query.
+            channel="$(armada_booted_channel)"
+        fi
+        armada_channel_to_token "$channel"
         ;;
     *)
-        channel=$(armada_token_to_channel "$1") || { echo "usage: steamos-select-branch <-l|-c|rel|beta|main>" >&2; exit 1; }
+        [[ -n "$repository" ]] || fail "Could not determine the update repository"
+        channel=$(armada_token_to_channel "$1") \
+            || { echo "usage: steamos-select-branch <-l|-c|rel|beta|main>" >&2; exit 1; }
+        armada_steam_channels_apply "$repository" "$channel" \
+            || fail "Channel $channel is unavailable for this image"
         mkdir -p "$(dirname "$ARMADA_CHANNEL_STATE")"
         printf '%s\n' "$channel" > "$ARMADA_CHANNEL_STATE"
         ;;

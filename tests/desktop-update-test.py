@@ -20,8 +20,14 @@ class UpdateHookTests(unittest.TestCase):
         bootc.write_text('#!/bin/sh\n[ "${BAD_BOOTC:-0}" = 0 ] || exit 1\ncat "$BOOTC_STATE"\n')
         bootc.chmod(0o755)
         (self.base / "bootc.json").write_text(json.dumps({"status": {"booted": {"image": {}}, "rollbackQueued": False}}))
+        (self.base / "release_config.py").write_text(
+            (ROOT / "system_files/usr/lib/armada/release_config.py").read_text())
+        self.release_config = self.base / "release.json"
+        self.release_config.write_text(
+            (ROOT / "system_files/usr/share/armada/release.json").read_text())
         library = self.base / "update-lib"
         library.write_text((ROOT / "system_files/usr/lib/armada/update-lib").read_text() + '''
+ARMADA_RELEASE_CONFIG="$TEST_RELEASE_CONFIG"
 ARMADA_CHANNEL_STATE="$TEST_CHANNEL_STATE"
 armada_update_log() { echo "$*" >&2; }
 armada_booted_ref() { echo "${BOOTED_REF:-ostree-image-signed:docker://ghcr.io/armada-os/armada:stable}"; }
@@ -51,7 +57,8 @@ armada_bootc_with_progress() { echo "$*" >> "$BOOTC_CALLS"; echo '70%'; }
             "source /usr/lib/armada/update-lib", f"source {library}"))
         self.env = {**os.environ, "PATH": str(self.bin) + os.pathsep + os.environ["PATH"],
                     "BOOTC_STATE": str(self.base / "bootc.json"), "BOOTC_CALLS": str(self.base / "calls"),
-                    "TEST_CHANNEL_STATE": str(self.base / "channel")}
+                    "TEST_CHANNEL_STATE": str(self.base / "channel"),
+                    "TEST_RELEASE_CONFIG": str(self.release_config)}
 
     def run_hook(self, *arguments, **kwargs):
         return subprocess.run(["bash", str(self.hook), *arguments], env=self.env,
@@ -147,6 +154,26 @@ armada_bootc_with_progress() { echo "$*" >> "$BOOTC_CALLS"; echo '70%'; }
             self.assertEqual((self.base / "channel").read_text(), channel + "\n")
         self.assertEqual((self.base / "channel").stat().st_mode & 0o777, 0o644)
         self.assertFalse(list(self.base.glob("channel.*")))
+
+    def test_fork_channel_list_and_selection_come_from_release_metadata(self):
+        config = json.loads(self.release_config.read_text())
+        config["channels"] = ["stable", "beta"]
+        self.release_config.write_text(json.dumps(config))
+        self.env["BOOTED_REF"] = (
+            "ostree-image-signed:docker://" + config["image_repository"] + ":stable"
+        )
+        listed = subprocess.run(["bash", str(self.selector), "-l"], env=self.env,
+                                capture_output=True, text=True)
+        self.assertEqual(listed.returncode, 0, listed.stderr)
+        self.assertEqual(listed.stdout.splitlines(), ["rel", "beta"])
+        denied = subprocess.run(["bash", str(self.selector), "testing"], env=self.env,
+                                capture_output=True, text=True)
+        self.assertNotEqual(denied.returncode, 0)
+        self.assertFalse((self.base / "channel").exists())
+        accepted = subprocess.run(["bash", str(self.selector), "beta"], env=self.env,
+                                  capture_output=True, text=True)
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        self.assertEqual((self.base / "channel").read_text(), "beta\n")
 
 
 if __name__ == "__main__":
